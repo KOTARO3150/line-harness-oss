@@ -57,14 +57,38 @@ export interface AffiliateReportV2 {
   linkClicks: number;
   /** Friends whose add-time last-touch attribution is this affiliate. */
   friendAdds: number;
-  /** Conversions attributed to this affiliate (conversion_events snapshot). */
+  /**
+   * Conversions attributed to this affiliate (conversion_events snapshot),
+   * EXCLUDING rejected CVs. = conversionsPending + conversionsApproved.
+   */
   conversions: number;
-  /** Conversion count broken down by conversion point. */
+  /** Attributed CVs still awaiting review (approval_status pending OR NULL). */
+  conversionsPending: number;
+  /** Attributed CVs approved by a reviewer. */
+  conversionsApproved: number;
+  /** Attributed CVs rejected by a reviewer (excluded from headline conversions/revenue). */
+  conversionsRejected: number;
+  /** Conversion count broken down by conversion point (rejected excluded). */
   conversionsByPoint: Array<{ conversionPointId: string; name: string; count: number; value: number }>;
-  /** Sum of conversion point values across attributed conversions. */
+  /** Sum of conversion point values across non-rejected attributed conversions. */
   revenue: number;
   /** revenue * commissionRate. */
   estimatedCommission: number;
+  /**
+   * Confirmed reward: SUM over APPROVED attributed CVs of the offer reward_amount
+   * resolved via attributed_ref_code → affiliate_links.offer_id → affiliate_offers.
+   * Approved CVs through offer-less links contribute 0 (no reward configured).
+   */
+  confirmedReward: number;
+  /** Per-offer breakdown for approved/pending CVs + confirmed reward. */
+  byOffer: Array<{
+    offerId: string;
+    offerName: string;
+    rewardAmount: number;
+    conversionsApproved: number;
+    conversionsPending: number;
+    confirmedReward: number;
+  }>;
   /** Attributed friends sharing an identity_key within this affiliate (>=2). */
   duplicateFlags: Array<{ friendId: string; identityKey: string }>;
 }
@@ -150,9 +174,20 @@ export async function getAffiliateReportV2(
     .bind(...friendAddBinds)
     .first<{ friend_adds: number }>();
 
-  // ── conversions + conversionsByPoint + revenue ─────────────────────────────
+  // ── conversions + conversionsByPoint + revenue + approval breakdown ─────────
   // conversion_events already snapshots affiliate_id at CV time, so we only read
   // that column (no re-attribution). Joined to conversion_points for value/name.
+  //
+  // Approval semantics (ASP Phase 2):
+  //   - approval_status NULL is a historical attributed row → treated as pending.
+  //   - headline conversions/revenue/conversionsByPoint EXCLUDE rejected CVs.
+  //   - conversionsPending / conversionsApproved / conversionsRejected report the
+  //     approval-status breakdown of the attributed CVs.
+  //
+  // A single normalized status expression is reused everywhere so NULL == pending
+  // is applied consistently.
+  const STATUS_EXPR = `COALESCE(ce.approval_status, 'pending')`;
+
   const cvConds: string[] = ['ce.affiliate_id = ?'];
   const cvBinds: unknown[] = [affiliateId];
   if (startDate) {
@@ -163,6 +198,9 @@ export async function getAffiliateReportV2(
     cvConds.push('julianday(ce.created_at) <= julianday(?)');
     cvBinds.push(endDate);
   }
+  const cvWhere = cvConds.join(' AND ');
+
+  // conversionsByPoint + revenue: non-rejected only.
   const byPoint = await db
     .prepare(
       `SELECT cp.id AS conversion_point_id,
@@ -171,7 +209,7 @@ export async function getAffiliateReportV2(
               COALESCE(SUM(cp.value), 0) AS value
          FROM conversion_events ce
          JOIN conversion_points cp ON cp.id = ce.conversion_point_id
-        WHERE ${cvConds.join(' AND ')}
+        WHERE ${cvWhere} AND ${STATUS_EXPR} != 'rejected'
         GROUP BY cp.id, cp.name
         ORDER BY count DESC`,
     )
@@ -184,9 +222,63 @@ export async function getAffiliateReportV2(
     count: r.count,
     value: r.value,
   }));
-  const conversions = conversionsByPoint.reduce((s, p) => s + p.count, 0);
   const revenue = conversionsByPoint.reduce((s, p) => s + p.value, 0);
   const estimatedCommission = revenue * affiliate.commission_rate;
+
+  // approval breakdown: one grouped pass over the attributed CVs.
+  const statusRows = await db
+    .prepare(
+      `SELECT ${STATUS_EXPR} AS status, COUNT(*) AS count
+         FROM conversion_events ce
+        WHERE ${cvWhere}
+        GROUP BY ${STATUS_EXPR}`,
+    )
+    .bind(...cvBinds)
+    .all<{ status: string; count: number }>();
+
+  let conversionsPending = 0;
+  let conversionsApproved = 0;
+  let conversionsRejected = 0;
+  for (const r of statusRows.results) {
+    if (r.status === 'approved') conversionsApproved = r.count;
+    else if (r.status === 'rejected') conversionsRejected = r.count;
+    else conversionsPending += r.count; // 'pending' (incl. coalesced NULL)
+  }
+  // headline conversions excludes rejected.
+  const conversions = conversionsPending + conversionsApproved;
+
+  // confirmedReward + byOffer: JOIN approved CVs → link → offer, SUM reward_amount.
+  // JOIN-based (no IN fan-out). Approved CVs whose link has no offer resolve to a
+  // NULL offer row → contribute 0 and never appear in byOffer (LEFT JOIN would
+  // add an off.id IS NULL bucket we don't want).
+  //
+  // confirmedReward is computed as the byOffer sum so both stay consistent.
+  const offerRows = await db
+    .prepare(
+      `SELECT off.id AS offer_id,
+              off.name AS offer_name,
+              off.reward_amount AS reward_amount,
+              SUM(CASE WHEN ${STATUS_EXPR} = 'approved' THEN 1 ELSE 0 END) AS approved,
+              SUM(CASE WHEN ${STATUS_EXPR} = 'pending' THEN 1 ELSE 0 END) AS pending
+         FROM conversion_events ce
+         JOIN affiliate_links al ON al.ref_code = ce.attributed_ref_code
+         JOIN affiliate_offers off ON off.id = al.offer_id
+        WHERE ${cvWhere} AND ${STATUS_EXPR} != 'rejected'
+        GROUP BY off.id, off.name, off.reward_amount
+        ORDER BY approved DESC, off.name ASC`,
+    )
+    .bind(...cvBinds)
+    .all<{ offer_id: string; offer_name: string; reward_amount: number; approved: number; pending: number }>();
+
+  const byOffer = offerRows.results.map((r) => ({
+    offerId: r.offer_id,
+    offerName: r.offer_name,
+    rewardAmount: r.reward_amount,
+    conversionsApproved: r.approved,
+    conversionsPending: r.pending,
+    confirmedReward: r.approved * r.reward_amount,
+  }));
+  const confirmedReward = byOffer.reduce((s, o) => s + o.confirmedReward, 0);
 
   // ── duplicateFlags: attributed friends sharing an identity_key ─────────────
   // "Attributed friend" here = friend whose add-time last-touch is this
@@ -238,9 +330,14 @@ export async function getAffiliateReportV2(
     linkClicks: linkClicksRow?.link_clicks ?? 0,
     friendAdds: friendAddsRow?.friend_adds ?? 0,
     conversions,
+    conversionsPending,
+    conversionsApproved,
+    conversionsRejected,
     conversionsByPoint,
     revenue,
     estimatedCommission,
+    confirmedReward,
+    byOffer,
     duplicateFlags,
   };
 }
@@ -250,7 +347,16 @@ export async function getAffiliateReportV2(
 /** Per-link performance counters keyed by ref_code. */
 export interface AffiliateLinkStat {
   friendAdds: number;
+  /**
+   * Non-rejected attributed conversions on this link = conversionsApproved +
+   * conversionsPending. Kept as the pre-approval `conversions` key for backward
+   * compatibility (rejected CVs are now excluded).
+   */
   conversions: number;
+  /** Attributed CVs on this link still awaiting review (pending OR NULL status). */
+  conversionsPending: number;
+  /** Attributed CVs on this link approved by a reviewer. */
+  conversionsApproved: number;
 }
 
 /**
@@ -281,7 +387,7 @@ export async function getAffiliateLinkStats(
   const ensure = (refCode: string): AffiliateLinkStat => {
     let s = stats.get(refCode);
     if (!s) {
-      s = { friendAdds: 0, conversions: 0 };
+      s = { friendAdds: 0, conversions: 0, conversionsPending: 0, conversionsApproved: 0 };
       stats.set(refCode, s);
     }
     return s;
@@ -290,17 +396,26 @@ export async function getAffiliateLinkStats(
   // conversions per link: attributed_ref_code grouped, scoped by affiliate_id
   // snapshot. NULL attributed_ref_code rows (attributed by id but without a
   // ref_code) can't map to a link, so they're excluded from the per-link view.
+  //
+  // Approval-aware: rejected CVs are excluded from every count. `conversions`
+  // is the non-rejected total (approved + pending) for backward compatibility;
+  // NULL approval_status is treated as pending (historical rows).
   const cvRows = await db
     .prepare(
-      `SELECT attributed_ref_code AS ref_code, COUNT(*) AS conversions
+      `SELECT attributed_ref_code AS ref_code,
+              SUM(CASE WHEN COALESCE(approval_status, 'pending') = 'approved' THEN 1 ELSE 0 END) AS approved,
+              SUM(CASE WHEN COALESCE(approval_status, 'pending') = 'pending' THEN 1 ELSE 0 END) AS pending
          FROM conversion_events
         WHERE affiliate_id = ? AND attributed_ref_code IS NOT NULL
         GROUP BY attributed_ref_code`,
     )
     .bind(affiliateId)
-    .all<{ ref_code: string; conversions: number }>();
+    .all<{ ref_code: string; approved: number; pending: number }>();
   for (const r of cvRows.results) {
-    ensure(r.ref_code).conversions = r.conversions;
+    const s = ensure(r.ref_code);
+    s.conversionsApproved = r.approved;
+    s.conversionsPending = r.pending;
+    s.conversions = r.approved + r.pending;
   }
 
   // friendAdds per link: same winner logic as per-affiliate friendAdds, but we
@@ -549,4 +664,128 @@ export async function getAffiliateJourneys(
       : null;
 
   return { items, nextCursor };
+}
+
+// ── Conversion approval queue (admin) ────────────────────────────────────────
+
+export interface ConversionApprovalRow {
+  eventId: string;
+  createdAt: string;
+  friendId: string;
+  friendName: string | null;
+  affiliateId: string;
+  affiliateName: string | null;
+  /** Offer name resolved via attributed_ref_code → link.offer_id, if any. */
+  offerName: string | null;
+  conversionPointName: string | null;
+  /** Conversion point value at report time (fixed reward is offer-side; this is the CV point value). */
+  value: number | null;
+  approvalStatus: 'pending' | 'approved' | 'rejected';
+  /**
+   * True when this event's friend shares an identity_key with ANOTHER
+   * affiliate-attributed conversion friend of the SAME affiliate — the Phase 1
+   * duplicate heuristic reapplied per affiliate. Fraud-review signal only.
+   */
+  duplicateFlag: boolean;
+}
+
+/**
+ * List affiliate-attributed conversion events for the admin approval queue,
+ * filtered by approval_status. Only rows with a non-NULL affiliate_id are in
+ * scope (the approval flow never applies to organic CVs).
+ *
+ * duplicateFlag reuses the Phase 1 identity_key heuristic, scoped per affiliate:
+ * a friend is flagged when their identity_key is shared by >=2 distinct friends
+ * among the affiliate's attributed conversions. The identityKeySql fragment is
+ * injected by the worker (same decoupling as getAffiliateReportV2) and must
+ * reference `friends.*`.
+ */
+export async function getConversionApprovalQueue(
+  db: D1Database,
+  opts: {
+    status: 'pending' | 'approved' | 'rejected';
+    identityKeySql: string;
+    limit?: number;
+    offset?: number;
+  },
+): Promise<ConversionApprovalRow[]> {
+  const { status, identityKeySql } = opts;
+  const limit = opts.limit ?? 200;
+  const offset = opts.offset ?? 0;
+
+  // dup_keys: identity_keys shared by >=2 distinct attributed-conversion friends
+  // WITHIN the same affiliate. Computed over the whole attributed-CV set (not
+  // filtered by status) so the flag is stable regardless of which queue tab the
+  // reviewer is on. No IN(?) fan-out — a GROUP BY subquery joined back per row.
+  const result = await db
+    .prepare(
+      `WITH attributed_cv AS (
+         SELECT DISTINCT ce.affiliate_id AS affiliate_id,
+                friends.id AS friend_id,
+                (${identityKeySql}) AS identity_key
+           FROM conversion_events ce
+           JOIN friends ON friends.id = ce.friend_id
+          WHERE ce.affiliate_id IS NOT NULL
+       ),
+       dup_keys AS (
+         SELECT affiliate_id, identity_key
+           FROM attributed_cv
+          GROUP BY affiliate_id, identity_key
+         HAVING COUNT(*) >= 2
+       )
+       SELECT
+         ce.id AS event_id,
+         ce.created_at AS created_at,
+         ce.friend_id AS friend_id,
+         friends.display_name AS friend_name,
+         ce.affiliate_id AS affiliate_id,
+         a.name AS affiliate_name,
+         off.name AS offer_name,
+         cp.name AS conversion_point_name,
+         cp.value AS value,
+         ce.approval_status AS approval_status,
+         (${identityKeySql}) AS identity_key,
+         CASE WHEN dk.identity_key IS NOT NULL THEN 1 ELSE 0 END AS duplicate_flag
+       FROM conversion_events ce
+       JOIN friends ON friends.id = ce.friend_id
+       LEFT JOIN affiliates a ON a.id = ce.affiliate_id
+       LEFT JOIN conversion_points cp ON cp.id = ce.conversion_point_id
+       LEFT JOIN affiliate_links al ON al.ref_code = ce.attributed_ref_code
+       LEFT JOIN affiliate_offers off ON off.id = al.offer_id
+       LEFT JOIN dup_keys dk
+              ON dk.affiliate_id = ce.affiliate_id
+             AND dk.identity_key = (${identityKeySql})
+      WHERE ce.affiliate_id IS NOT NULL
+        AND ce.approval_status = ?
+      ORDER BY julianday(ce.created_at) DESC, ce.id DESC
+      LIMIT ? OFFSET ?`,
+    )
+    .bind(status, limit, offset)
+    .all<{
+      event_id: string;
+      created_at: string;
+      friend_id: string;
+      friend_name: string | null;
+      affiliate_id: string;
+      affiliate_name: string | null;
+      offer_name: string | null;
+      conversion_point_name: string | null;
+      value: number | null;
+      approval_status: 'pending' | 'approved' | 'rejected';
+      duplicate_flag: number;
+    }>();
+
+  return result.results.map((r) => ({
+    eventId: r.event_id,
+    createdAt: r.created_at,
+    friendId: r.friend_id,
+    friendName: r.friend_name,
+    affiliateId: r.affiliate_id,
+    affiliateName: r.affiliate_name,
+    offerName: r.offer_name,
+    conversionPointName: r.conversion_point_name,
+    value: r.value,
+    approvalStatus: r.approval_status,
+    duplicateFlag: r.duplicate_flag === 1,
+  }));
 }

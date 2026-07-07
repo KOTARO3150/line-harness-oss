@@ -19,6 +19,9 @@ const dbMocks = {
   listAffiliateLinks: vi.fn(),
   countAffiliateLinks: vi.fn(),
   getAffiliateLinkStats: vi.fn(),
+  // offer-name enrichment on link responses (loadOfferNames)
+  listAffiliateOffers: vi.fn().mockResolvedValue([]),
+  enrollAffiliateInOffer: vi.fn(),
   generateRefSlug: vi.fn(() => 'slug00'),
   // account-settings helpers (used by resolveLinkBaseUrl via @line-crm/db)
   getLinkBaseUrl: vi.fn().mockResolvedValue(null),
@@ -96,7 +99,7 @@ type LinkRow = { id: string; affiliate_id: string; ref_code: string; label: stri
 
 let affiliatesByFriend: Map<string, AffRow>;
 let linksByAffiliate: Map<string, LinkRow[]>;
-let statsByAffiliate: Map<string, Map<string, { friendAdds: number; conversions: number }>>;
+let statsByAffiliate: Map<string, Map<string, { friendAdds: number; conversions: number; conversionsPending: number; conversionsApproved: number }>>;
 let slugCounter: number;
 
 const FRIENDS: Record<string, { id: string; display_name: string }> = {
@@ -176,6 +179,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
   dbMocks.getLineAccounts.mockResolvedValue([]);
+  // No offers by default → serializeLink emits offerId/offerName = null.
+  dbMocks.listAffiliateOffers.mockResolvedValue([]);
   installLineFetchMock();
   installStore();
 });
@@ -249,11 +254,11 @@ describe('GET /api/liff/affiliate/me — cross-affiliate isolation', () => {
 
     // Seed real per-link stats for this affiliate's link; getAffiliateLinkStats
     // (mocked) surfaces them, and serializeLink must emit the real values.
-    statsByAffiliate.set(affId, new Map([[refCode, { friendAdds: 3, conversions: 2 }]]));
+    statsByAffiliate.set(affId, new Map([[refCode, { friendAdds: 3, conversions: 2, conversionsPending: 1, conversionsApproved: 1 }]]));
 
     const res = await call('/api/liff/affiliate/me?lineAccessToken=tok-alice');
     const body = (await res.json()) as {
-      links: Array<{ refCode: string; label: string | null; url: string; clickCount: number; friendAdds: number; conversions: number }>;
+      links: Array<{ refCode: string; label: string | null; url: string; clickCount: number; friendAdds: number; conversions: number; conversionsPending: number; conversionsApproved: number }>;
     };
     expect(body.links).toHaveLength(1);
     const link = body.links[0];
@@ -263,6 +268,8 @@ describe('GET /api/liff/affiliate/me — cross-affiliate isolation', () => {
     // Real per-link aggregates now flow through (no longer placeholders).
     expect(link.friendAdds).toBe(3);
     expect(link.conversions).toBe(2);
+    expect(link.conversionsPending).toBe(1);
+    expect(link.conversionsApproved).toBe(1);
   });
 
   it('a link with no stats entry defaults friendAdds/conversions to 0', async () => {

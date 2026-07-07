@@ -22,6 +22,9 @@ export interface ConversionEvent {
   created_at: string;
   affiliate_id: string | null;
   attributed_ref_code: string | null;
+  /** Approval state for affiliate-attributed CVs (ASP Phase 2). NULL if non-attributed. */
+  approval_status: 'pending' | 'approved' | 'rejected' | null;
+  approved_at: string | null;
 }
 
 // ── Conversion Points CRUD ──────────────────────────────────────────────────
@@ -94,10 +97,14 @@ export async function trackConversion(
   // Resolve last-touch affiliate attribution before inserting the event.
   const attr = await resolveAffiliateAttribution(db, input.friendId);
 
+  // Affiliate-attributed CVs enter the approval queue as 'pending'; non-attributed
+  // CVs leave approval_status NULL (the approval flow only applies to attributed rows).
+  const approvalStatus = attr ? 'pending' : null;
+
   await db
     .prepare(
-      `INSERT INTO conversion_events (id, conversion_point_id, friend_id, user_id, affiliate_code, metadata, created_at, affiliate_id, attributed_ref_code)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO conversion_events (id, conversion_point_id, friend_id, user_id, affiliate_code, metadata, created_at, affiliate_id, attributed_ref_code, approval_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -109,6 +116,7 @@ export async function trackConversion(
       now,
       attr?.affiliateId ?? null,
       attr?.refCode ?? null,
+      approvalStatus,
     )
     .run();
 

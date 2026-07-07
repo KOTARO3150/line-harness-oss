@@ -17,6 +17,8 @@ import {
   getPoolAccounts,
   getTrackedLinkById,
   getMessageTemplateById,
+  getAffiliateLinkByRefCode,
+  getAffiliateOfferById,
   jstNow,
 } from '@line-crm/db';
 import { buildIntroMessage } from '../services/intro-message.js';
@@ -173,8 +175,30 @@ async function applyRefAttribution(
     const tl = await getTrackedLinkById(db, ref);
     if (tl?.is_active) trackedLink = tl;
   }
-  const effectiveTagId = route?.tag_id ?? trackedLink?.tag_id ?? null;
-  const effectiveScenarioId = route?.scenario_id ?? trackedLink?.scenario_id ?? null;
+
+  // ASP Phase 2: when the ref is neither an entry_route nor a tracked_link,
+  // it may be an affiliate offer link. An affiliate_link carrying a non-NULL
+  // offer_id inherits the offer's tag + scenario, applied through the same
+  // path as entry_routes / tracked_links so the flow is identical. Generic
+  // affiliate links (offer_id NULL) resolve to no tag/scenario — unchanged.
+  let offer: Awaited<ReturnType<typeof getAffiliateOfferById>> = null;
+  if (!route && !trackedLink) {
+    const affiliateLink = await getAffiliateLinkByRefCode(db, ref);
+    if (affiliateLink?.offer_id) {
+      const fetchedOffer = await getAffiliateOfferById(db, affiliateLink.offer_id);
+      // Inactive offers (is_active = 0) are treated as null: stop the automatic
+      // flow (tag / scenario) so a paused campaign does not enroll new friends.
+      // Attribution recording (ref_tracking / ref_code on the friend row) is
+      // unaffected — it runs before this function and always persists the click.
+      if (fetchedOffer?.is_active) {
+        offer = fetchedOffer;
+      }
+    }
+  }
+
+  const effectiveTagId = route?.tag_id ?? trackedLink?.tag_id ?? offer?.tag_id ?? null;
+  const effectiveScenarioId =
+    route?.scenario_id ?? trackedLink?.scenario_id ?? offer?.scenario_id ?? null;
 
   if (effectiveTagId) {
     await addTagToFriend(db, friend.id, effectiveTagId);

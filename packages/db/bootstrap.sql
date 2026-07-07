@@ -77,9 +77,22 @@ CREATE TABLE affiliate_links (
   ref_code        TEXT NOT NULL UNIQUE,
   label           TEXT,
   line_account_id TEXT REFERENCES line_accounts (id),
+  offer_id        TEXT REFERENCES affiliate_offers (id),
   is_active       INTEGER NOT NULL DEFAULT 1,
   created_at      TEXT NOT NULL,
   click_count     INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE affiliate_offers (
+  id              TEXT PRIMARY KEY,
+  name            TEXT NOT NULL,
+  description     TEXT,
+  reward_amount   INTEGER NOT NULL DEFAULT 0,
+  line_account_id TEXT REFERENCES line_accounts (id),
+  tag_id          TEXT REFERENCES tags (id),
+  scenario_id     TEXT REFERENCES scenarios (id),
+  is_active       INTEGER NOT NULL DEFAULT 1,
+  created_at      TEXT NOT NULL
 );
 
 CREATE TABLE affiliates (
@@ -249,6 +262,8 @@ CREATE TABLE conversion_events (
   metadata             TEXT,
   affiliate_id         TEXT REFERENCES affiliates (id),
   attributed_ref_code  TEXT,
+  approval_status      TEXT CHECK (approval_status IN ('pending','approved','rejected')),
+  approved_at          TEXT,
   created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
@@ -832,6 +847,8 @@ CREATE INDEX idx_ad_conversion_logs_status ON ad_conversion_logs (status);
 CREATE INDEX idx_affiliate_clicks_affiliate ON affiliate_clicks (affiliate_id);
 
 CREATE INDEX idx_affiliate_links_affiliate ON affiliate_links (affiliate_id);
+
+CREATE INDEX idx_affiliate_links_offer ON affiliate_links (offer_id);
 
 CREATE UNIQUE INDEX idx_affiliates_friend ON affiliates (friend_id) WHERE friend_id IS NOT NULL;
 

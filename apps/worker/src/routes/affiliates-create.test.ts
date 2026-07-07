@@ -27,6 +27,7 @@ const dbMocks = {
   getAffiliateByFriendId: vi.fn(),
   getAffiliateJourneys: vi.fn(),
   listAffiliateLinks: vi.fn(),
+  listAffiliateOffers: vi.fn().mockResolvedValue([]),
   // resolveLinkBaseUrl → getLinkBaseUrl
   getLinkBaseUrl: vi.fn(),
 };
@@ -41,6 +42,15 @@ const env = {
   API_KEY,
   WORKER_URL: 'https://worker.example.com',
 } as unknown as import('../index.js').Env['Bindings'];
+
+function get(path: string) {
+  const headers = new Headers({ Authorization: `Bearer ${API_KEY}` });
+  return worker.fetch(
+    new Request(`https://worker.example.com${path}`, { method: 'GET', headers }),
+    env,
+    { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext,
+  );
+}
 
 function post(path: string, body: unknown) {
   const headers = new Headers({
@@ -226,5 +236,57 @@ describe('POST /api/affiliates — code validation', () => {
   it('400s when name, code, and friendId are all missing', async () => {
     const res = await post('/api/affiliates', { commissionRate: 10 });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /api/affiliates/:id/links — offer_name enrichment', () => {
+  it('attaches offer_name to rows with offer_id and null to rows without', async () => {
+    dbMocks.getAffiliateById.mockResolvedValue({
+      id: 'aff-1',
+      name: 'Alice',
+      code: 'Ab3xYz',
+      commission_rate: 10,
+      is_active: 1,
+      created_at: '2026-07-07T00:00:00.000+09:00',
+      friend_id: null,
+    });
+    dbMocks.listAffiliateLinks.mockResolvedValue([
+      {
+        id: 'link-1',
+        affiliate_id: 'aff-1',
+        ref_code: 'Ref001',
+        label: null,
+        line_account_id: null,
+        offer_id: 'offer-A',
+        is_active: 1,
+        created_at: '2026-07-07T00:00:00.000+09:00',
+        click_count: 0,
+      },
+      {
+        id: 'link-2',
+        affiliate_id: 'aff-1',
+        ref_code: 'Ref002',
+        label: null,
+        line_account_id: null,
+        offer_id: null,
+        is_active: 1,
+        created_at: '2026-07-07T00:00:00.000+09:00',
+        click_count: 0,
+      },
+    ]);
+    dbMocks.listAffiliateOffers.mockResolvedValue([
+      { id: 'offer-A', name: 'Summer Campaign', is_active: 1, reward_amount: 100, description: null, line_account_id: null, tag_id: null, scenario_id: null, created_at: '2026-07-01T00:00:00.000+09:00' },
+    ]);
+
+    const res = await get('/api/affiliates/aff-1/links');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: Array<{ id: string; offer_id: string | null; offer_name: string | null }>;
+    };
+    expect(body.success).toBe(true);
+    expect(body.data).toHaveLength(2);
+    expect(body.data[0].offer_name).toBe('Summer Campaign');
+    expect(body.data[1].offer_name).toBeNull();
   });
 });

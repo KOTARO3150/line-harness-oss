@@ -8,7 +8,7 @@
 // bundles @line/liff (the orchestrator uses a `declare const liff` global), so
 // we re-home the same UI here and take the access token via ctx instead.
 
-import { StrictMode, useCallback, useEffect, useRef, useState } from 'react';
+import React, { StrictMode, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import './styles.css';
 
@@ -35,12 +35,26 @@ interface AffiliateLinkData {
   clickCount: number;
   friendAdds: number;
   conversions: number;
+  conversionsPending: number;
+  conversionsApproved: number;
+  offerId: string | null;
+  offerName: string | null;
+}
+
+interface OfferData {
+  id: string;
+  name: string;
+  description: string | null;
+  rewardAmount: number;
+  enrolled: boolean;
+  refCode: string | null;
+  url: string | null;
 }
 
 type State =
   | { phase: 'loading' }
   | { phase: 'not_registered' }
-  | { phase: 'registered'; affiliate: AffiliateData; links: AffiliateLinkData[] }
+  | { phase: 'registered'; affiliate: AffiliateData; links: AffiliateLinkData[]; offers: OfferData[] }
   | { phase: 'error'; message: string };
 
 let _root: Root | null = null;
@@ -62,6 +76,28 @@ async function fetchMe(
   }
   const data = (await res.json()) as { affiliate: AffiliateData; links: AffiliateLinkData[] };
   return { registered: true, affiliate: data.affiliate, links: data.links };
+}
+
+async function fetchOffers(token: string): Promise<OfferData[]> {
+  const url = `/api/liff/affiliate/offers?lineAccessToken=${encodeURIComponent(token)}`;
+  const res = await fetch(url);
+  if (!res.ok) return [];
+  const data = (await res.json()) as { offers: OfferData[] };
+  return data.offers;
+}
+
+async function postEnrollOffer(token: string, offerId: string): Promise<AffiliateLinkData> {
+  const res = await fetch(`/api/liff/affiliate/offers/${encodeURIComponent(offerId)}/enroll`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lineAccessToken: token }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `API ${res.status}`);
+  }
+  const data = (await res.json()) as { link: AffiliateLinkData };
+  return data.link;
 }
 
 async function postRegister(
@@ -137,24 +173,19 @@ async function copyText(text: string): Promise<boolean> {
 
 // ─── Components ─────────────────────────────────────────
 
-function LinkRow({ link }: { link: AffiliateLinkData }) {
+function CopyButton({ url, urlRef }: { url: string; urlRef: React.RefObject<HTMLInputElement | null> }) {
   const [copied, setCopied] = useState(false);
-  // manualCopy: both programmatic paths failed → surface the URL selected so the
-  // user can long-press / Ctrl+C it themselves.
   const [manualCopy, setManualCopy] = useState(false);
-  const urlRef = useRef<HTMLInputElement>(null);
 
   async function handleCopy() {
-    const ok = await copyText(link.url);
+    const ok = await copyText(url);
     if (ok) {
       setManualCopy(false);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
       return;
     }
-    // Programmatic copy unavailable — reveal a selected input for manual copy.
     setManualCopy(true);
-    // Select on next paint once the input is mounted.
     setTimeout(() => {
       const el = urlRef.current;
       if (el) {
@@ -166,23 +197,15 @@ function LinkRow({ link }: { link: AffiliateLinkData }) {
   }
 
   return (
-    <div className="border rounded p-3 space-y-2">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          {link.label && (
-            <div className="text-xs font-medium text-gray-700 mb-1">{link.label}</div>
-          )}
-          <div className="text-xs text-gray-500 break-all">{link.url}</div>
-        </div>
-        <button
-          onClick={handleCopy}
-          className="shrink-0 text-xs bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded transition-colors"
-        >
-          {copied ? 'コピーしました' : 'コピー'}
-        </button>
-      </div>
+    <>
+      <button
+        onClick={handleCopy}
+        className="shrink-0 text-xs bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded transition-colors"
+      >
+        {copied ? 'コピーしました' : 'コピー'}
+      </button>
       {manualCopy && (
-        <div className="space-y-1">
+        <div className="w-full space-y-1">
           <p className="text-xs text-gray-500">
             自動コピーできませんでした。下のURLを選択してコピーしてください。
           </p>
@@ -190,17 +213,121 @@ function LinkRow({ link }: { link: AffiliateLinkData }) {
             ref={urlRef}
             type="text"
             readOnly
-            value={link.url}
+            value={url}
             onFocus={(e) => e.currentTarget.select()}
             className="w-full border rounded px-2 py-1 text-xs text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
           />
         </div>
       )}
-      <div className="flex gap-4 text-xs text-gray-600">
+    </>
+  );
+}
+
+function LinkRow({ link }: { link: AffiliateLinkData }) {
+  const urlRef = useRef<HTMLInputElement>(null);
+
+  return (
+    <div className="border rounded p-3 space-y-2">
+      <div className="flex items-start justify-between gap-2 flex-wrap">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1 flex-wrap mb-1">
+            {link.offerName ? (
+              <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium">
+                {link.offerName}
+              </span>
+            ) : (
+              <span className="text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">
+                汎用
+              </span>
+            )}
+            {link.label && (
+              <span className="text-xs font-medium text-gray-700">{link.label}</span>
+            )}
+          </div>
+          <div className="text-xs text-gray-500 break-all">{link.url}</div>
+        </div>
+        <CopyButton url={link.url} urlRef={urlRef} />
+      </div>
+      <div className="flex flex-wrap gap-4 text-xs text-gray-600">
         <span>クリック: <strong>{link.clickCount}</strong></span>
         <span>友だち追加: <strong>{link.friendAdds}</strong></span>
-        <span>成約: <strong>{link.conversions}</strong></span>
+        <span>CV: 承認済み <strong>{link.conversionsApproved}</strong>・審査中 <strong>{link.conversionsPending}</strong></span>
       </div>
+    </div>
+  );
+}
+
+function OfferCard({
+  offer,
+  token,
+  onEnrolled,
+}: {
+  offer: OfferData;
+  token: string;
+  onEnrolled: (link: AffiliateLinkData) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enrolledUrl = offer.url ?? '';
+  const urlRef = useRef<HTMLInputElement>(null);
+  const enrollCalledRef = useRef(false);
+
+  const rewardLabel = offer.rewardAmount > 0
+    ? `1件 ¥${offer.rewardAmount.toLocaleString()}`
+    : '報酬未設定';
+
+  async function handleEnroll() {
+    if (busy || enrollCalledRef.current) return;
+    enrollCalledRef.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      const link = await postEnrollOffer(token, offer.id);
+      onEnrolled(link);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+      enrollCalledRef.current = false;
+    }
+  }
+
+  return (
+    <div className="border rounded p-3 space-y-2">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-gray-800">{offer.name}</div>
+          {offer.description && (
+            <div className="text-xs text-gray-500 mt-0.5">{offer.description}</div>
+          )}
+        </div>
+        <div className="shrink-0 text-xs font-medium text-green-700 bg-green-50 px-2 py-1 rounded">
+          {rewardLabel}
+        </div>
+      </div>
+
+      {offer.enrolled ? (
+        <div className="space-y-1">
+          <div className="text-xs text-gray-600 font-medium">
+            あなたの{offer.name}用リンク
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="text-xs text-gray-500 break-all flex-1 min-w-0">{enrolledUrl}</div>
+            <CopyButton url={enrolledUrl} urlRef={urlRef} />
+          </div>
+        </div>
+      ) : (
+        <>
+          {error && <div className="text-xs text-red-600">{error}</div>}
+          <button
+            onClick={handleEnroll}
+            disabled={busy}
+            className="w-full bg-green-600 text-white py-2 rounded text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+          >
+            {busy ? '参加中...' : 'この案件に参加する'}
+          </button>
+        </>
+      )}
     </div>
   );
 }
@@ -222,7 +349,10 @@ function App({ ctx }: { ctx: AffiliateContext }) {
     try {
       const result = await fetchMe(token);
       if (result.registered) {
-        setState({ phase: 'registered', affiliate: result.affiliate, links: result.links });
+        // Fetch offers in parallel; fall back to [] on error so a transient
+        // offers failure never blocks the main registered view.
+        const offers = await fetchOffers(token).catch(() => []);
+        setState({ phase: 'registered', affiliate: result.affiliate, links: result.links, offers });
       } else {
         setState({ phase: 'not_registered' });
       }
@@ -241,7 +371,8 @@ function App({ ctx }: { ctx: AffiliateContext }) {
     setRegisterBusy(true);
     try {
       const data = await postRegister(token);
-      setState({ phase: 'registered', affiliate: data.affiliate, links: data.links });
+      const offers = await fetchOffers(token).catch(() => []);
+      setState({ phase: 'registered', affiliate: data.affiliate, links: data.links, offers });
     } catch (e) {
       setState({ phase: 'error', message: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -310,12 +441,44 @@ function App({ ctx }: { ctx: AffiliateContext }) {
   }
 
   // registered
-  const { links } = state;
+  const { links, offers } = state;
   const atLimit = links.length >= 20;
+
+  function handleOfferEnrolled(newLink: AffiliateLinkData) {
+    setState((prev) => {
+      if (prev.phase !== 'registered') return prev;
+      // Replace matching offer's enrolled state and append link.
+      const updatedOffers = prev.offers.map((o) =>
+        o.id === newLink.offerId
+          ? { ...o, enrolled: true, refCode: newLink.refCode, url: newLink.url }
+          : o,
+      );
+      return {
+        ...prev,
+        links: [...prev.links, newLink],
+        offers: updatedOffers,
+      };
+    });
+  }
 
   return (
     <div className="af-fade-in max-w-md mx-auto p-4 pb-12 space-y-4">
       <h1 className="text-lg font-bold">アフィリエイト</h1>
+
+      {/* Offers section */}
+      {offers.length > 0 && (
+        <section className="space-y-2">
+          <h2 className="text-sm font-semibold text-gray-700">案件</h2>
+          {offers.map((offer) => (
+            <OfferCard
+              key={offer.id}
+              offer={offer}
+              token={token}
+              onEnrolled={handleOfferEnrolled}
+            />
+          ))}
+        </section>
+      )}
 
       {/* Link list */}
       <section className="space-y-2">

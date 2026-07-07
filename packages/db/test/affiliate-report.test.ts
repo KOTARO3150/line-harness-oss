@@ -133,14 +133,26 @@ function insertAffiliate(
 
 function insertLink(
   sqlite: Database.Database,
-  opts: { id: string; affiliateId: string; refCode: string; clickCount?: number },
+  opts: { id: string; affiliateId: string; refCode: string; clickCount?: number; offerId?: string | null },
 ): void {
   sqlite
     .prepare(
-      `INSERT INTO affiliate_links (id, affiliate_id, ref_code, label, line_account_id, is_active, created_at, click_count)
-       VALUES (?, ?, ?, NULL, NULL, 1, '2024-01-01T00:00:00.000+09:00', ?)`,
+      `INSERT INTO affiliate_links (id, affiliate_id, ref_code, label, line_account_id, is_active, created_at, click_count, offer_id)
+       VALUES (?, ?, ?, NULL, NULL, 1, '2024-01-01T00:00:00.000+09:00', ?, ?)`,
     )
-    .run(opts.id, opts.affiliateId, opts.refCode, opts.clickCount ?? 0);
+    .run(opts.id, opts.affiliateId, opts.refCode, opts.clickCount ?? 0, opts.offerId ?? null);
+}
+
+function insertOffer(
+  sqlite: Database.Database,
+  opts: { id: string; name: string; rewardAmount: number },
+): void {
+  sqlite
+    .prepare(
+      `INSERT INTO affiliate_offers (id, name, reward_amount, is_active, created_at)
+       VALUES (?, ?, ?, 1, '2024-01-01T00:00:00.000+09:00')`,
+    )
+    .run(opts.id, opts.name, opts.rewardAmount);
 }
 
 function insertTouch(
@@ -169,14 +181,21 @@ function insertConversionPoint(
 
 function insertConversion(
   sqlite: Database.Database,
-  opts: { id: string; pointId: string; friendId: string; affiliateId: string | null; refCode: string | null; createdAt: string },
+  opts: {
+    id: string; pointId: string; friendId: string; affiliateId: string | null;
+    refCode: string | null; createdAt: string;
+    approvalStatus?: 'pending' | 'approved' | 'rejected' | null;
+  },
 ): void {
   sqlite
     .prepare(
-      `INSERT INTO conversion_events (id, conversion_point_id, friend_id, affiliate_id, attributed_ref_code, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO conversion_events (id, conversion_point_id, friend_id, affiliate_id, attributed_ref_code, created_at, approval_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(opts.id, opts.pointId, opts.friendId, opts.affiliateId, opts.refCode, opts.createdAt);
+    .run(
+      opts.id, opts.pointId, opts.friendId, opts.affiliateId, opts.refCode, opts.createdAt,
+      opts.approvalStatus ?? null,
+    );
 }
 
 function insertForm(sqlite: Database.Database, opts: { id: string; name: string }): void {
@@ -508,8 +527,9 @@ describe('getAffiliateLinkStats — per-link friendAdds + conversions', () => {
 
   test('friendAdds + conversions split correctly across two links', async () => {
     const stats = await getAffiliateLinkStats(db, 'aff-A');
-    expect(stats.get('refA1')).toEqual({ friendAdds: 1, conversions: 1 });
-    expect(stats.get('refA2')).toEqual({ friendAdds: 1, conversions: 2 });
+    // No approval_status set → NULL treated as pending; conversions = approved+pending.
+    expect(stats.get('refA1')).toEqual({ friendAdds: 1, conversions: 1, conversionsPending: 1, conversionsApproved: 0 });
+    expect(stats.get('refA2')).toEqual({ friendAdds: 1, conversions: 2, conversionsPending: 2, conversionsApproved: 0 });
   });
 
   test('per-link friendAdds sum equals the per-affiliate friendAdds', async () => {
@@ -532,6 +552,86 @@ describe('getAffiliateLinkStats — per-link friendAdds + conversions', () => {
     insertLink(sqlite, { id: 'link-A3', affiliateId: 'aff-A', refCode: 'refA3' });
     const stats = await getAffiliateLinkStats(db, 'aff-A');
     expect(stats.has('refA3')).toBe(false);
+  });
+});
+
+// ── approval-aware reporting: rejected exclusion + confirmedReward + byOffer ──
+// ASP Phase 2 C1: reward numbers must reflect the approval decision. Rejected CVs
+// leave the headline; confirmedReward = SUM(approved CV × offer reward_amount).
+
+describe('getAffiliateReportV2 — approval breakdown + confirmedReward + byOffer', () => {
+  let sqlite: Database.Database;
+  let db: D1Database;
+
+  beforeEach(() => {
+    sqlite = setupDb();
+    db = asD1(sqlite);
+
+    insertAffiliate(sqlite, 'aff-A');
+    insertOffer(sqlite, { id: 'off-1', name: 'Freelance導入', rewardAmount: 30000 });
+    insertOffer(sqlite, { id: 'off-2', name: 'Small案件', rewardAmount: 5000 });
+    // offer-scoped links + one generic (offer-less) link.
+    insertLink(sqlite, { id: 'l1', affiliateId: 'aff-A', refCode: 'ref1', offerId: 'off-1' });
+    insertLink(sqlite, { id: 'l2', affiliateId: 'aff-A', refCode: 'ref2', offerId: 'off-2' });
+    insertLink(sqlite, { id: 'lg', affiliateId: 'aff-A', refCode: 'refg', offerId: null });
+    insertConversionPoint(sqlite, { id: 'cp-1', name: 'Purchase', value: 1000 });
+
+    // off-1: 2 approved, 1 pending, 1 rejected.
+    insertFriend(sqlite, 'f1', { createdAt: jstDaysAgo(10) });
+    insertConversion(sqlite, { id: 'c1', pointId: 'cp-1', friendId: 'f1', affiliateId: 'aff-A', refCode: 'ref1', createdAt: jstDaysAgo(5), approvalStatus: 'approved' });
+    insertConversion(sqlite, { id: 'c2', pointId: 'cp-1', friendId: 'f1', affiliateId: 'aff-A', refCode: 'ref1', createdAt: jstDaysAgo(5), approvalStatus: 'approved' });
+    insertConversion(sqlite, { id: 'c3', pointId: 'cp-1', friendId: 'f1', affiliateId: 'aff-A', refCode: 'ref1', createdAt: jstDaysAgo(5), approvalStatus: 'pending' });
+    insertConversion(sqlite, { id: 'c4', pointId: 'cp-1', friendId: 'f1', affiliateId: 'aff-A', refCode: 'ref1', createdAt: jstDaysAgo(5), approvalStatus: 'rejected' });
+    // off-2: 1 approved.
+    insertConversion(sqlite, { id: 'c5', pointId: 'cp-1', friendId: 'f1', affiliateId: 'aff-A', refCode: 'ref2', createdAt: jstDaysAgo(5), approvalStatus: 'approved' });
+    // generic link (no offer): 1 approved → contributes 0 reward, no byOffer row.
+    insertConversion(sqlite, { id: 'c6', pointId: 'cp-1', friendId: 'f1', affiliateId: 'aff-A', refCode: 'refg', createdAt: jstDaysAgo(5), approvalStatus: 'approved' });
+    // legacy NULL-status attributed CV → treated as pending.
+    insertConversion(sqlite, { id: 'c7', pointId: 'cp-1', friendId: 'f1', affiliateId: 'aff-A', refCode: 'ref2', createdAt: jstDaysAgo(5), approvalStatus: null });
+  });
+
+  test('headline conversions/revenue exclude rejected; breakdown counts are correct', async () => {
+    const r = (await getAffiliateReportV2(db, 'aff-A', { identityKeySql: IDENTITY_KEY_SQL }))!;
+    // approved: c1,c2,c5,c6 = 4. pending: c3, c7(NULL) = 2. rejected: c4 = 1.
+    expect(r.conversionsApproved).toBe(4);
+    expect(r.conversionsPending).toBe(2);
+    expect(r.conversionsRejected).toBe(1);
+    // headline conversions = approved + pending = 6 (rejected excluded).
+    expect(r.conversions).toBe(6);
+    // revenue: 6 non-rejected CVs × 1000 = 6000 (rejected c4 excluded).
+    expect(r.revenue).toBe(6000);
+  });
+
+  test('confirmedReward = SUM(approved CV × offer reward_amount); offer-less approved adds 0', async () => {
+    const r = (await getAffiliateReportV2(db, 'aff-A', { identityKeySql: IDENTITY_KEY_SQL }))!;
+    // off-1: 2 approved × 30000 = 60000. off-2: 1 approved × 5000 = 5000.
+    // generic approved (c6) → 0. Total = 65000.
+    expect(r.confirmedReward).toBe(65000);
+  });
+
+  test('byOffer breaks down approved/pending + confirmedReward per offer (offer-less excluded)', async () => {
+    const r = (await getAffiliateReportV2(db, 'aff-A', { identityKeySql: IDENTITY_KEY_SQL }))!;
+    const byId = new Map(r.byOffer.map((o) => [o.offerId, o]));
+    // generic link CV must NOT create a byOffer bucket.
+    expect(r.byOffer.length).toBe(2);
+    expect(byId.get('off-1')).toEqual({
+      offerId: 'off-1', offerName: 'Freelance導入', rewardAmount: 30000,
+      conversionsApproved: 2, conversionsPending: 1, confirmedReward: 60000,
+    });
+    expect(byId.get('off-2')).toEqual({
+      offerId: 'off-2', offerName: 'Small案件', rewardAmount: 5000,
+      conversionsApproved: 1, conversionsPending: 1, confirmedReward: 5000,
+    });
+  });
+
+  test('getAffiliateLinkStats splits pending/approved and excludes rejected', async () => {
+    const stats = await getAffiliateLinkStats(db, 'aff-A');
+    // ref1: 2 approved + 1 pending (rejected c4 excluded) → conversions=3.
+    expect(stats.get('ref1')).toEqual({ friendAdds: 0, conversions: 3, conversionsPending: 1, conversionsApproved: 2 });
+    // ref2: 1 approved + 1 pending(NULL) → conversions=2.
+    expect(stats.get('ref2')).toEqual({ friendAdds: 0, conversions: 2, conversionsPending: 1, conversionsApproved: 1 });
+    // refg: 1 approved.
+    expect(stats.get('refg')).toEqual({ friendAdds: 0, conversions: 1, conversionsPending: 0, conversionsApproved: 1 });
   });
 });
 

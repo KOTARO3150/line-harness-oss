@@ -34,6 +34,34 @@ import type {
   PoolAccount,
 } from '@line-crm/shared'
 
+/** Affiliate offer (案件) as returned by the worker. */
+export type AffiliateOffer = {
+  id: string
+  name: string
+  description: string | null
+  rewardAmount: number | null
+  lineAccountId: string | null
+  tagId: string | null
+  scenarioId: string | null
+  isActive: boolean
+  createdAt: string
+}
+
+/** Approval queue row as returned by /api/conversions/approvals */
+export type ConversionApprovalItem = {
+  eventId: string
+  createdAt: string
+  friendId: string
+  friendName: string | null
+  affiliateId: string
+  affiliateName: string | null
+  offerName: string | null
+  conversionPointName: string | null
+  value: number | null
+  approvalStatus: 'pending' | 'approved' | 'rejected'
+  duplicateFlag: boolean
+}
+
 /** Broadcast type from API (now camelCase after worker serialization) */
 export type ApiBroadcast = Omit<Broadcast, 'targetType'> & {
   targetType: BroadcastTargetType;
@@ -593,6 +621,8 @@ export const api = {
         is_active: number;
         created_at: string;
         click_count: number;
+        offer_id: string | null;
+        offer_name: string | null;
       }>>>(`/api/affiliates/${id}/links`),
     /** All-affiliates aggregate report (single-pass, no N+1) */
     allReport: (params?: { startDate?: string; endDate?: string }) =>
@@ -1313,6 +1343,61 @@ export const api = {
           { method: 'DELETE' },
         ),
     },
+  },
+  affiliateOffers: {
+    list: (params?: { activeOnly?: boolean }) => {
+      const qs = params?.activeOnly ? '?activeOnly=true' : ''
+      return fetchApi<{ success: boolean; data: AffiliateOffer[] }>(`/api/affiliate-offers${qs}`)
+    },
+    get: (id: string) =>
+      fetchApi<{ success: boolean; data: AffiliateOffer }>(`/api/affiliate-offers/${id}`),
+    create: (data: {
+      name: string
+      description?: string | null
+      rewardAmount?: number
+      lineAccountId?: string | null
+      tagId?: string | null
+      scenarioId?: string | null
+    }) =>
+      fetchApi<{ success: boolean; data: AffiliateOffer }>('/api/affiliate-offers', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (id: string, data: Partial<{
+      name: string
+      description: string | null
+      rewardAmount: number
+      lineAccountId: string | null
+      tagId: string | null
+      scenarioId: string | null
+      isActive: boolean
+    }>) =>
+      fetchApi<{ success: boolean; data: AffiliateOffer }>(`/api/affiliate-offers/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+  },
+  conversionApprovals: {
+    list: (params?: { status?: 'pending' | 'approved' | 'rejected'; limit?: number; offset?: number }) => {
+      const p = new URLSearchParams()
+      if (params?.status) p.set('status', params.status)
+      if (params?.limit !== undefined) p.set('limit', String(params.limit))
+      if (params?.offset !== undefined) p.set('offset', String(params.offset))
+      const qs = p.toString()
+      return fetchApi<{ success: boolean; data: ConversionApprovalItem[] }>(
+        `/api/conversions/approvals${qs ? `?${qs}` : ''}`,
+      )
+    },
+    approve: (eventId: string) =>
+      fetchApi<{ success: boolean; data?: { id: string; approvalStatus: string }; error?: string }>(
+        `/api/conversions/events/${eventId}/approval`,
+        { method: 'PATCH', body: JSON.stringify({ status: 'approved' }) },
+      ),
+    reject: (eventId: string) =>
+      fetchApi<{ success: boolean; data?: { id: string; approvalStatus: string }; error?: string }>(
+        `/api/conversions/events/${eventId}/approval`,
+        { method: 'PATCH', body: JSON.stringify({ status: 'rejected' }) },
+      ),
   },
   duplicates: {
     stats: (options?: { forceRefresh?: boolean }) =>

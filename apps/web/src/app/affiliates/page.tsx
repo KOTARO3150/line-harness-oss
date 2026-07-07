@@ -54,6 +54,8 @@ interface AffiliateLink {
   is_active: number
   created_at: string
   click_count: number
+  offer_id: string | null
+  offer_name: string | null
 }
 
 interface ReportV2 {
@@ -65,9 +67,21 @@ interface ReportV2 {
   linkClicks: number
   friendAdds: number
   conversions: number
+  conversionsPending: number
+  conversionsApproved: number
+  conversionsRejected: number
   conversionsByPoint: Array<{ conversionPointId: string; name: string; count: number; value: number }>
   revenue: number
   estimatedCommission: number
+  confirmedReward: number
+  byOffer: Array<{
+    offerId: string
+    offerName: string
+    rewardAmount: number
+    conversionsApproved: number
+    conversionsPending: number
+    confirmedReward: number
+  }>
   duplicateFlags: Array<{ friendId: string; identityKey: string }>
 }
 
@@ -344,12 +358,46 @@ export default function AffiliatesPage() {
                                     <p className="text-2xl font-bold text-blue-600 mt-1">{report.friendAdds.toLocaleString()}</p>
                                   </div>
                                   <div className="bg-white rounded-lg p-4 border border-gray-100">
-                                    <p className="text-xs text-gray-500">CV 件数</p>
+                                    <p className="text-xs text-gray-500">CV 件数（却下除く）</p>
                                     <p className="text-2xl font-bold text-gray-900 mt-1">{report.conversions.toLocaleString()}</p>
                                   </div>
-                                  <div className="bg-white rounded-lg p-4 border border-gray-100">
-                                    <p className="text-xs text-gray-500">参考報酬</p>
-                                    <p className="text-2xl font-bold text-emerald-600 mt-1">{formatYen(report.estimatedCommission)}</p>
+                                  <div className="bg-white rounded-lg p-4 border border-emerald-100 bg-emerald-50/40">
+                                    <p className="text-xs text-gray-500">確定報酬</p>
+                                    <p className="text-2xl font-bold text-emerald-600 mt-1">{formatYen(report.confirmedReward)}</p>
+                                    <p className="text-[11px] text-gray-500 mt-1">
+                                      承認済み {report.conversionsApproved.toLocaleString()}件 / 審査中 {report.conversionsPending.toLocaleString()}件 / 却下 {report.conversionsRejected.toLocaleString()}件
+                                    </p>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Per-offer breakdown */}
+                              {report && report.byOffer.length > 0 && (
+                                <div>
+                                  <p className="text-xs font-semibold text-gray-500 uppercase mb-2">案件別内訳</p>
+                                  <div className="overflow-x-auto">
+                                    <table className="min-w-[560px] text-sm">
+                                      <thead>
+                                        <tr className="text-left text-xs text-gray-400">
+                                          <th className="pb-1 pr-4">案件</th>
+                                          <th className="pb-1 pr-4 text-right">報酬単価</th>
+                                          <th className="pb-1 pr-4 text-right">承認済み</th>
+                                          <th className="pb-1 pr-4 text-right">審査中</th>
+                                          <th className="pb-1 text-right">確定報酬</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-gray-100">
+                                        {report.byOffer.map((o) => (
+                                          <tr key={o.offerId}>
+                                            <td className="py-1 pr-4 text-gray-700">{o.offerName}</td>
+                                            <td className="py-1 pr-4 text-right text-gray-500">{formatYen(o.rewardAmount)}</td>
+                                            <td className="py-1 pr-4 text-right font-semibold text-gray-900">{o.conversionsApproved.toLocaleString()}</td>
+                                            <td className="py-1 pr-4 text-right text-gray-500">{o.conversionsPending.toLocaleString()}</td>
+                                            <td className="py-1 text-right font-semibold text-emerald-600">{formatYen(o.confirmedReward)}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
                                   </div>
                                 </div>
                               )}
@@ -412,6 +460,7 @@ export default function AffiliatesPage() {
                                         <tr className="text-left text-xs text-gray-400">
                                           <th className="pb-1 pr-4">ref_code</th>
                                           <th className="pb-1 pr-4">ラベル</th>
+                                          <th className="pb-1 pr-4">案件</th>
                                           <th className="pb-1 pr-4 text-right">クリック</th>
                                           <th className="pb-1">状態</th>
                                         </tr>
@@ -421,6 +470,13 @@ export default function AffiliatesPage() {
                                           <tr key={link.id}>
                                             <td className="py-1 pr-4 font-mono text-blue-600">{link.ref_code}</td>
                                             <td className="py-1 pr-4 text-gray-600">{link.label ?? '—'}</td>
+                                            <td className="py-1 pr-4">
+                                              {link.offer_name ? (
+                                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
+                                                  {link.offer_name}
+                                                </span>
+                                              ) : <span className="text-gray-400">—</span>}
+                                            </td>
                                             <td className="py-1 pr-4 text-right font-semibold text-gray-900">{link.click_count.toLocaleString()}</td>
                                             <td className="py-1">
                                               {link.is_active

@@ -13,6 +13,8 @@ export interface AffiliateLink {
   is_active: number;
   created_at: string;
   click_count: number;
+  /** Offer this link belongs to (ASP Phase 2). NULL = 汎用リンク. */
+  offer_id: string | null;
 }
 
 // ── slug generation ──────────────────────────────────────────────────────────
@@ -51,6 +53,8 @@ export interface CreateAffiliateLinkInput {
   affiliateId: string;
   label?: string | null;
   lineAccountId?: string | null;
+  /** Offer to scope this link to (ASP Phase 2). Omit for a 汎用リンク. */
+  offerId?: string | null;
 }
 
 /**
@@ -81,8 +85,8 @@ export async function createAffiliateLink(
       await db
         .prepare(
           `INSERT INTO affiliate_links
-             (id, affiliate_id, ref_code, label, line_account_id, is_active, created_at)
-           VALUES (?, ?, ?, ?, ?, 1, ?)`,
+             (id, affiliate_id, ref_code, label, line_account_id, offer_id, is_active, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
         )
         .bind(
           id,
@@ -90,6 +94,7 @@ export async function createAffiliateLink(
           refCode,
           input.label ?? null,
           input.lineAccountId ?? null,
+          input.offerId ?? null,
           now,
         )
         .run();

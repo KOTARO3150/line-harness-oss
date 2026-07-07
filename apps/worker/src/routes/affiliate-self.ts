@@ -9,6 +9,8 @@ import {
   generateRefSlug,
   getLineAccounts,
   getAffiliateLinkStats,
+  listAffiliateOffers,
+  enrollAffiliateInOffer,
   type Affiliate,
   type AffiliateLink,
   type AffiliateLinkStat,
@@ -112,6 +114,7 @@ function serializeLink(
   link: AffiliateLink,
   baseUrl: string,
   stats?: Map<string, AffiliateLinkStat>,
+  offerNames?: Map<string, string>,
 ) {
   const s = stats?.get(link.ref_code);
   return {
@@ -120,8 +123,23 @@ function serializeLink(
     url: `${baseUrl}/${link.ref_code}`,
     clickCount: link.click_count,
     friendAdds: s?.friendAdds ?? 0,
+    // conversions = non-rejected total (approved + pending), kept for compat.
     conversions: s?.conversions ?? 0,
+    conversionsPending: s?.conversionsPending ?? 0,
+    conversionsApproved: s?.conversionsApproved ?? 0,
+    offerId: link.offer_id ?? null,
+    offerName: link.offer_id ? (offerNames?.get(link.offer_id) ?? null) : null,
   };
+}
+
+/**
+ * Build an offerId → name lookup once per request so serializeLink can label
+ * offer-scoped links without an N+1 fetch. Includes inactive offers so an
+ * already-issued link's name still resolves after its offer is deactivated.
+ */
+async function loadOfferNames(db: D1Database): Promise<Map<string, string>> {
+  const offers = await listAffiliateOffers(db, { activeOnly: false });
+  return new Map(offers.map((o) => [o.id, o.name]));
 }
 
 function serializeAffiliate(aff: Affiliate) {
@@ -162,9 +180,10 @@ affiliateSelfRoutes.post('/api/liff/affiliate/register', async (c) => {
       const links = await listAffiliateLinks(db, existing.id);
       const baseUrl = await resolveLinkBaseUrl(db, c.env);
       const stats = await getAffiliateLinkStats(db, existing.id);
+      const offerNames = await loadOfferNames(db);
       return c.json({
         affiliate: serializeAffiliate(existing),
-        links: links.map((l) => serializeLink(l, baseUrl, stats)),
+        links: links.map((l) => serializeLink(l, baseUrl, stats, offerNames)),
       });
     }
 
@@ -186,9 +205,10 @@ affiliateSelfRoutes.post('/api/liff/affiliate/register', async (c) => {
       const links = await listAffiliateLinks(db, raced.id);
       const baseUrl = await resolveLinkBaseUrl(db, c.env);
       const stats = await getAffiliateLinkStats(db, raced.id);
+      const offerNames = await loadOfferNames(db);
       return c.json({
         affiliate: serializeAffiliate(raced),
-        links: links.map((l) => serializeLink(l, baseUrl, stats)),
+        links: links.map((l) => serializeLink(l, baseUrl, stats, offerNames)),
       });
     }
     // Auto-issue the first link on registration.
@@ -230,9 +250,10 @@ affiliateSelfRoutes.get('/api/liff/affiliate/me', async (c) => {
     const links = await listAffiliateLinks(db, affiliate.id);
     const baseUrl = await resolveLinkBaseUrl(db, c.env);
     const stats = await getAffiliateLinkStats(db, affiliate.id);
+    const offerNames = await loadOfferNames(db);
     return c.json({
       affiliate: serializeAffiliate(affiliate),
-      links: links.map((l) => serializeLink(l, baseUrl, stats)),
+      links: links.map((l) => serializeLink(l, baseUrl, stats, offerNames)),
     });
   } catch (err) {
     console.error('GET /api/liff/affiliate/me error:', err);
@@ -280,6 +301,119 @@ affiliateSelfRoutes.post('/api/liff/affiliate/links', async (c) => {
     return c.json({ link: serializeLink(link, baseUrl) });
   } catch (err) {
     console.error('POST /api/liff/affiliate/links error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * GET /api/liff/affiliate/offers?lineAccessToken= — list active offers with the
+ * caller's participation state. For enrolled offers, the caller's offer-scoped
+ * refCode + url are returned so the LIFF page can show "あなたの◯◯案件用リンク".
+ *
+ * The caller must be a registered affiliate (404 otherwise) — offers are only
+ * meaningful once you have an affiliate identity to attach links to.
+ */
+affiliateSelfRoutes.get('/api/liff/affiliate/offers', async (c) => {
+  try {
+    const token = c.req.query('lineAccessToken');
+    if (!token) {
+      return c.json({ success: false, error: 'lineAccessToken is required' }, 400);
+    }
+
+    const db = c.env.DB;
+    const resolved = await resolveFriendFromLineToken(c.env, token);
+    if (resolved.status !== 'ok') {
+      return unresolvedResponse(c, resolved);
+    }
+    const friend = resolved.friend;
+
+    const affiliate = await getAffiliateByFriendId(db, friend.id);
+    if (!affiliate) {
+      return c.json({ success: false, error: 'Not registered as an affiliate' }, 404);
+    }
+
+    const offers = await listAffiliateOffers(db, { activeOnly: true });
+    const links = await listAffiliateLinks(db, affiliate.id);
+    const baseUrl = await resolveLinkBaseUrl(db, c.env);
+
+    // Map offerId → the earliest link for this affiliate scoped to that offer.
+    // listAffiliateLinks orders newest-first, so iterate in reverse to keep the
+    // oldest (matching enroll's earliest-wins idempotency).
+    const linkByOffer = new Map<string, AffiliateLink>();
+    for (let i = links.length - 1; i >= 0; i--) {
+      const l = links[i];
+      if (l.offer_id) linkByOffer.set(l.offer_id, l);
+    }
+
+    const data = offers.map((o) => {
+      const link = linkByOffer.get(o.id);
+      return {
+        id: o.id,
+        name: o.name,
+        description: o.description,
+        rewardAmount: o.reward_amount,
+        enrolled: Boolean(link),
+        refCode: link ? link.ref_code : null,
+        url: link ? `${baseUrl}/${link.ref_code}` : null,
+      };
+    });
+
+    return c.json({ offers: data });
+  } catch (err) {
+    console.error('GET /api/liff/affiliate/offers error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+/**
+ * POST /api/liff/affiliate/offers/:id/enroll — join an offer, issuing an
+ * offer-scoped link. Idempotent per affiliate×offer (re-enroll returns the
+ * existing link). Inactive/unknown offers → 404.
+ * Body: { lineAccessToken }.
+ */
+affiliateSelfRoutes.post('/api/liff/affiliate/offers/:id/enroll', async (c) => {
+  try {
+    const body = await c.req
+      .json<{ lineAccessToken?: string }>()
+      .catch((): { lineAccessToken?: string } => ({}));
+    const token = body.lineAccessToken;
+    if (!token) {
+      return c.json({ success: false, error: 'lineAccessToken is required' }, 400);
+    }
+
+    const db = c.env.DB;
+    const resolved = await resolveFriendFromLineToken(c.env, token);
+    if (resolved.status !== 'ok') {
+      return unresolvedResponse(c, resolved);
+    }
+    const friend = resolved.friend;
+
+    const affiliate = await getAffiliateByFriendId(db, friend.id);
+    if (!affiliate) {
+      return c.json({ success: false, error: 'Not registered as an affiliate' }, 404);
+    }
+
+    // Guard on active offers only. Enrolling in a hidden/inactive offer must not
+    // be possible from the self-serve LIFF surface. (enrollAffiliateInOffer
+    // itself throws on a truly-missing offer; the activeOnly list is the gate.)
+    const activeOffers = await listAffiliateOffers(db, { activeOnly: true });
+    const offer = activeOffers.find((o) => o.id === c.req.param('id'));
+    if (!offer) {
+      return c.json({ success: false, error: 'Offer not found' }, 404);
+    }
+
+    const { link } = await enrollAffiliateInOffer(db, {
+      affiliateId: affiliate.id,
+      offerId: offer.id,
+    });
+    const baseUrl = await resolveLinkBaseUrl(db, c.env);
+    const offerNames = new Map([[offer.id, offer.name]]);
+    return c.json({
+      offerId: offer.id,
+      link: serializeLink(link, baseUrl, undefined, offerNames),
+    });
+  } catch (err) {
+    console.error('POST /api/liff/affiliate/offers/:id/enroll error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

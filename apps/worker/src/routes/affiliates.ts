@@ -16,6 +16,7 @@ import {
   getAffiliateByFriendId,
   getAffiliateJourneys,
   listAffiliateLinks,
+  listAffiliateOffers,
 } from '@line-crm/db';
 import { IDENTITY_KEY_SQL } from '../lib/identity-key.js';
 import { resolveLinkBaseUrl } from '../lib/link-base-url.js';
@@ -280,7 +281,15 @@ affiliates.get('/api/affiliates/:id/links', async (c) => {
       return c.json({ success: false, error: 'Affiliate not found' }, 404);
     }
     const links = await listAffiliateLinks(c.env.DB, c.req.param('id'));
-    return c.json({ success: true, data: links });
+    const offerNames = await (async () => {
+      const offers = await listAffiliateOffers(c.env.DB, { activeOnly: false });
+      return new Map(offers.map((o) => [o.id, o.name]));
+    })();
+    const data = links.map((row) => ({
+      ...row,
+      offer_name: row.offer_id != null ? (offerNames.get(row.offer_id) ?? null) : null,
+    }));
+    return c.json({ success: true, data });
   } catch (err) {
     console.error('GET /api/affiliates/:id/links error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);

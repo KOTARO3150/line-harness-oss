@@ -51,7 +51,8 @@
     "043_events_og.sql",
     "044_forms_og.sql",
     "045_menus_auto_tag.sql",
-    "046_affiliate_links.sql"
+    "046_affiliate_links.sql",
+    "047_affiliate_offers.sql"
   ],
-  "migrationCount": 52
+  "migrationCount": 53
 }

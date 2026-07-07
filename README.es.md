@@ -88,7 +88,7 @@ Tarda unos 5 minutos. Al finalizar, el panel en `https://<your-name>-admin.pages
 - **Emisión self-serve de enlaces** — los afiliados generan sus propios enlaces LIFF de tracking sin intervención del administrador
 - **Gestión de campañas** — comisión fija por campaña, varias campañas en paralelo
 - **Tracking cronológico** — registra clic → alta como contacto → conversión en orden, atribución last-touch
-- **Flujo de aprobación** — detección de duplicados en solicitudes → revisar → confirmar, exclusión automática de conversiones fraudulentas
+- **Flujo de aprobación** — aprueba o rechaza las conversiones atribuidas para confirmar la comisión, con marcas de cuentas duplicadas para detectar posible fraude
 - **Notificaciones push por LINE** — push automático al afiliado cuando se confirma la conversión
 - Detalles: [docs/wiki/27-Affiliate-ASP.md](docs/wiki/27-Affiliate-ASP.md)
 

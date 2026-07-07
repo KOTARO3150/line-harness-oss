@@ -88,7 +88,7 @@ Takes about 5 minutes. Once done, the dashboard at `https://<your-name>-admin.pa
 - **Self-serve link issuance** — affiliates generate their own tracked LIFF links without admin intervention
 - **Campaign management** — set a fixed reward per campaign, run multiple campaigns in parallel
 - **Timeline tracking** — records click → friend-add → conversion in sequence, attribution via last-touch
-- **Approval workflow** — duplicate-detection on submissions → approve → finalize, auto-exclusion of fraudulent conversions
+- **Approval workflow** — approve/reject attributed conversions to finalize rewards, with duplicate-account flags to surface potential fraud
 - **LINE push notifications** — automatic push to the affiliate when a conversion is confirmed
 - Details: [docs/wiki/27-Affiliate-ASP.md](docs/wiki/27-Affiliate-ASP.md)
 

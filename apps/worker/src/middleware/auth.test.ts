@@ -48,6 +48,9 @@ function app() {
   a.route('/', adminAuth);
   a.get('/api/protected', (c) => c.json({ success: true, data: c.get('staff') }));
   a.post('/api/protected', (c) => c.json({ success: true, data: c.get('staff') }));
+  a.get('/api/forms/form-1', (c) => c.json({ success: true }));
+  a.put('/api/forms/form-1', (c) => c.json({ success: true }));
+  a.delete('/api/forms/form-1', (c) => c.json({ success: true }));
   return a;
 }
 
@@ -155,6 +158,23 @@ describe('protected API access', () => {
     const res = await app().request('/api/protected', {
       headers: { Cookie: 'lh_admin_session=%; other=%E0%A4%A' },
     }, crossSiteEnv());
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('public form definition boundary', () => {
+  test('allows unauthenticated GET so LIFF can render the form', async () => {
+    const res = await app().request('/api/forms/form-1', {}, crossSiteEnv());
+    expect(res.status).toBe(200);
+  });
+
+  test('rejects unauthenticated PUT', async () => {
+    const res = await app().request('/api/forms/form-1', { method: 'PUT' }, crossSiteEnv());
+    expect(res.status).toBe(401);
+  });
+
+  test('rejects unauthenticated DELETE', async () => {
+    const res = await app().request('/api/forms/form-1', { method: 'DELETE' }, crossSiteEnv());
     expect(res.status).toBe(401);
   });
 });

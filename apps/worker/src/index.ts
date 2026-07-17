@@ -80,6 +80,7 @@ import { profileRefresh } from './routes/profile-refresh.js';
 import { richMenuGroups } from './routes/rich-menu-groups.js';
 import adminVersion from './routes/admin-version.js';
 import adminUpdate from './routes/admin-update.js';
+import { consultationCharts } from './routes/consultation-charts.js';
 import { isLinkPreviewBot } from './lib/og-bot.js';
 import { buildOgHtml } from './lib/og-html.js';
 import {
@@ -101,6 +102,12 @@ export type Env = {
     LINE_CHANNEL_ID: string;
     LINE_LOGIN_CHANNEL_ID: string;
     LINE_LOGIN_CHANNEL_SECRET: string;
+    GOOGLE_CLIENT_ID?: string;
+    GOOGLE_CLIENT_SECRET?: string;
+    ZOOM_ACCOUNT_ID?: string;
+    ZOOM_CLIENT_ID?: string;
+    ZOOM_CLIENT_SECRET?: string;
+    ZOOM_USER_ID?: string;
     WORKER_URL: string;
     // Admin auth topology (see middleware/admin-auth-config.ts):
     ADMIN_ORIGIN?: string;          // Comma-separated admin web origin allowlist for credentialed CORS
@@ -154,6 +161,7 @@ app.use('*', authMiddleware);
 // Mount route groups — MVP & Round 2
 app.route('/', webhook);
 app.route('/', friends);
+app.route('/', consultationCharts);
 app.route('/', tags);
 app.route('/', scenarios);
 app.route('/', broadcasts);

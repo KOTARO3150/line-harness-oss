@@ -237,6 +237,7 @@ export default function BookingsPage() {
                       >
                         {b.friend_name ?? '-'}
                       </Link>
+                      <Link href={`/charts/detail?friend=${encodeURIComponent(b.friend_id)}`} className="ml-2 text-xs text-green-700 hover:underline">カルテ</Link>
                     </td>
                     <td className="px-4 py-3 text-sm">{b.menu_name}</td>
                     <td className="px-4 py-3 text-sm">{b.staff_name}</td>
@@ -248,8 +249,18 @@ export default function BookingsPage() {
                       <span className={`inline-block px-2 py-0.5 rounded text-xs ${statusBadgeColor[b.status] ?? 'bg-gray-100'}`}>
                         {statusLabel[b.status] ?? b.status}
                       </span>
+                      {b.external_event_id && (
+                        <span className="ml-1 inline-block rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-700" title="Googleカレンダーへ登録済み">
+                          カレンダー同期済み
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-right">
+                      {b.zoom_start_url && (
+                        <a href={b.zoom_start_url} target="_blank" rel="noreferrer" className="mr-2 inline-block rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700">
+                          Zoom開始
+                        </a>
+                      )}
                       <ActionButtons status={b.status} onAction={(a) => handleDecide(b.id, a)} />
                     </td>
                   </tr>

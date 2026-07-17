@@ -1466,6 +1466,7 @@ export interface BookingMenu {
   sort_order: number;
   is_active: number;
   auto_tag_id: string | null;
+  create_zoom_meeting: number;
 }
 
 export interface BookingStaff {
@@ -1507,6 +1508,11 @@ export interface BookingRequest {
   menu_name: string;
   staff_name: string;
   friend_name: string | null;
+  external_event_id: string | null;
+  external_calendar_id: string | null;
+  zoom_meeting_id: string | null;
+  zoom_join_url: string | null;
+  zoom_start_url: string | null;
 }
 
 function withAccount(path: string, accountId: string): string {
@@ -1615,6 +1621,119 @@ export const bookingApi = {
     ),
   pendingCount: (accountId: string) =>
     fetchApi<{ count: number }>(withAccount('/api/booking/admin/pending-count', accountId)),
+  zoomStatus: (accountId: string) =>
+    fetchApi<{ configured: boolean }>(withAccount('/api/booking/admin/zoom-status', accountId)),
+};
+
+export interface ConsultationChartListItem {
+  friend_id: string;
+  friend_name: string | null;
+  picture_url: string | null;
+  chart_id: string | null;
+  customer_name: string | null;
+  customer_name_kana: string | null;
+  updated_at: string | null;
+  last_consultation_at: string | null;
+  consultation_count: number;
+  has_allergies: boolean;
+  has_medications: boolean;
+  has_safety_notes: boolean;
+  tags: Array<{ id: string; name: string; color: string }>;
+}
+
+export interface ConsultationChart {
+  id: string;
+  friend_id: string;
+  customer_name: string | null;
+  customer_name_kana: string | null;
+  birth_date: string | null;
+  phone: string | null;
+  allergies: string | null;
+  current_medications: string | null;
+  safety_notes: string | null;
+  general_notes: string | null;
+  updated_at: string;
+}
+
+export interface ConsultationRecord {
+  id: string;
+  consultation_at: string;
+  consultation_type: string;
+  chief_complaint: string | null;
+  observations: string | null;
+  recommendation: string | null;
+  products: string | null;
+  usage_instructions: string | null;
+  follow_up_plan: string | null;
+  follow_up_due_date: string | null;
+  follow_up_completed_at: string | null;
+  follow_up_last_sent_at: string | null;
+  source_form_submission_id: string | null;
+}
+
+export const consultationChartApi = {
+  operationTest: (accountId: string) =>
+    fetchApi<{
+      generatedAt: string;
+      checks: Array<{ key: string; label: string; status: 'ready' | 'warning' | 'error'; detail: string; href: string }>;
+      simulation: {
+        customerName: string; formName: string | null; answers: Record<string, unknown>;
+        tags: Array<{ id: string; name: string }>;
+        mappings: Array<{ question: string; target: string; value: string }>;
+        booking: { menus: number; staff: number };
+        externalWritesPerformed: false;
+      };
+    }>(`/api/suzuki/operation-test?account_id=${encodeURIComponent(accountId)}`),
+  today: (accountId: string) =>
+    fetchApi<{
+      date: string;
+      counts: { bookings: number; submissions: number; warnings: number; followUps: number; unanswered: number };
+      bookings: Array<{ id: string; friend_id: string; starts_at: string; status: string; friend_name: string | null; menu_name: string; staff_name: string }>;
+      submissions: Array<{ id: string; friend_id: string; created_at: string; friend_name: string | null; form_name: string }>;
+      warnings: Array<{ friend_id: string; customer_name: string | null; has_safety_notes: number; has_allergies: number; has_medications: number }>;
+      followUps: Array<{ id: string; friend_id: string; customer_name: string | null; follow_up_plan: string | null; follow_up_due_date: string }>;
+      unanswered: Array<{ friendId: string; displayName: string | null; lastIncomingAt: string; lastIncomingContent: string; lastIncomingType: string }>;
+    }>(`/api/suzuki/today?account_id=${encodeURIComponent(accountId)}`),
+  list: (accountId: string, filters: { search?: string; safety?: string; tagId?: string } = {}) =>
+    fetchApi<{ charts: ConsultationChartListItem[] }>(
+      `/api/consultation-charts?account_id=${encodeURIComponent(accountId)}&search=${encodeURIComponent(filters.search || '')}&safety=${encodeURIComponent(filters.safety || 'all')}&tag_id=${encodeURIComponent(filters.tagId || '')}`,
+    ),
+  get: (accountId: string, friendId: string) =>
+    fetchApi<{
+      friend: { id: string; display_name: string | null; picture_url: string | null };
+      chart: ConsultationChart | null;
+      records: ConsultationRecord[];
+      bookings: Array<{ id: string; starts_at: string; status: string; menu_name: string }>;
+      tags: Array<{ id: string; name: string; color: string }>;
+      submissions: Array<{
+        id: string;
+        created_at: string;
+        form_name: string;
+        imported: boolean;
+        data: Record<string, unknown>;
+        fields: Array<{ name: string; label: string; chartTarget?: string }>;
+      }>;
+    }>(`/api/consultation-charts/${encodeURIComponent(friendId)}?account_id=${encodeURIComponent(accountId)}`),
+  save: (accountId: string, friendId: string, body: Partial<ConsultationChart>) =>
+    fetchApi<{ id: string }>(
+      `/api/consultation-charts/${encodeURIComponent(friendId)}?account_id=${encodeURIComponent(accountId)}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
+  addRecord: (accountId: string, friendId: string, body: Partial<ConsultationRecord>) =>
+    fetchApi<{ id: string }>(
+      `/api/consultation-charts/${encodeURIComponent(friendId)}/records?account_id=${encodeURIComponent(accountId)}`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  setFollowUpCompleted: (accountId: string, friendId: string, recordId: string, completed: boolean) =>
+    fetchApi<{ completedAt: string | null }>(
+      `/api/consultation-charts/${encodeURIComponent(friendId)}/records/${encodeURIComponent(recordId)}/follow-up?account_id=${encodeURIComponent(accountId)}`,
+      { method: 'PATCH', body: JSON.stringify({ completed }) },
+    ),
+  sendFollowUp: (accountId: string, friendId: string, recordId: string, message: string) =>
+    fetchApi<{ messageId: string; sentAt: string }>(
+      `/api/consultation-charts/${encodeURIComponent(friendId)}/records/${encodeURIComponent(recordId)}/follow-up/send?account_id=${encodeURIComponent(accountId)}`,
+      { method: 'POST', body: JSON.stringify({ message }) },
+    ),
 };
 
 // ============================================================

@@ -180,6 +180,9 @@ CREATE TABLE bookings (
   decided_by_staff_id     TEXT,
   external_event_id       TEXT,                 -- Phase 3 余地 (Google Calendar)
   external_calendar_id    TEXT,                 -- Phase 3 余地
+  zoom_meeting_id         TEXT,
+  zoom_join_url           TEXT,
+  zoom_start_url          TEXT,                 -- host-only; never sent to customers
   created_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   FOREIGN KEY (line_account_id) REFERENCES line_accounts(id),
@@ -522,6 +525,7 @@ CREATE TABLE menus (
   is_active             INTEGER NOT NULL DEFAULT 1,
   deleted_at            TEXT,
   auto_tag_id           TEXT,                  -- 予約申込時に friend に自動付与するタグ
+  create_zoom_meeting   INTEGER NOT NULL DEFAULT 0,
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   FOREIGN KEY (line_account_id) REFERENCES line_accounts(id),
@@ -1010,3 +1014,30 @@ CREATE INDEX idx_users_email ON users (email);
 CREATE INDEX idx_users_external_id ON users (external_id);
 
 CREATE INDEX idx_users_phone ON users (phone);
+
+CREATE TABLE consultation_charts (
+  id TEXT PRIMARY KEY, line_account_id TEXT NOT NULL, friend_id TEXT NOT NULL UNIQUE,
+  customer_name TEXT, customer_name_kana TEXT, birth_date TEXT, phone TEXT,
+  allergies TEXT, current_medications TEXT, safety_notes TEXT, general_notes TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id),
+  FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_consultation_charts_account ON consultation_charts (line_account_id, updated_at DESC);
+CREATE TABLE consultation_records (
+  id TEXT PRIMARY KEY, chart_id TEXT NOT NULL, consultation_at TEXT NOT NULL,
+  consultation_type TEXT NOT NULL DEFAULT 'in_person', chief_complaint TEXT,
+  observations TEXT, recommendation TEXT, products TEXT, usage_instructions TEXT,
+  follow_up_plan TEXT, follow_up_due_date TEXT, follow_up_completed_at TEXT, follow_up_last_sent_at TEXT, source_form_submission_id TEXT UNIQUE,
+  created_by_staff_id TEXT NOT NULL, created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (chart_id) REFERENCES consultation_charts(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_consultation_records_chart ON consultation_records (chart_id, consultation_at DESC);
+CREATE INDEX idx_consultation_records_follow_up_due ON consultation_records (follow_up_due_date, follow_up_completed_at);
+CREATE TABLE consultation_audit_logs (
+  id TEXT PRIMARY KEY, line_account_id TEXT NOT NULL, chart_id TEXT,
+  friend_id TEXT NOT NULL, staff_id TEXT NOT NULL, action TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_consultation_audit_chart ON consultation_audit_logs (chart_id, created_at DESC);

@@ -17,6 +17,7 @@ const EMPTY: Partial<BookingMenu> = {
   sort_order: 0,
   is_active: 1,
   auto_tag_id: null,
+  create_zoom_meeting: 0,
 }
 
 export default function MenusPage() {
@@ -154,7 +155,10 @@ export default function MenusPage() {
               <tbody className="divide-y divide-gray-100">
                 {items.map((m) => (
                   <tr key={m.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 text-sm font-medium">{m.name}</td>
+                    <td className="px-4 py-3 text-sm font-medium">
+                      {m.name}
+                      {m.create_zoom_meeting ? <span className="ml-2 rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-700">Zoom</span> : null}
+                    </td>
                     <td className="px-4 py-3 text-sm text-gray-600">
                       {m.category_label ? (
                         <span className="inline-block px-2 py-0.5 rounded bg-gray-100 text-xs">{m.category_label}</span>
@@ -324,6 +328,16 @@ function Modal({
               このメニューが予約されると、申込者の友だちに自動でこのタグが付きます。タグは既存のものから選択してください (友だち画面 / シナリオ等で使われているタグ)。
             </p>
           </Field>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={Boolean(form.create_zoom_meeting)}
+              onChange={(e) => set('create_zoom_meeting', e.target.checked ? 1 : 0)}
+              className="rounded"
+            />
+            予約確定時にZoomミーティングを自動発行する
+          </label>
+          <p className="-mt-2 text-xs text-gray-500">オンライン相談メニューだけで有効にしてください。参加URLはLINE確定通知とGoogleカレンダーへ自動挿入されます。</p>
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"

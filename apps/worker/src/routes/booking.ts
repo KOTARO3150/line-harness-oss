@@ -21,6 +21,15 @@ import {
 } from '../services/booking-idempotency.js';
 import { sendBookingNotification } from '../services/booking-notifier.js';
 import { insertConfirmationReminders } from '../services/booking-confirm.js';
+import {
+  removeBookingFromCalendar,
+  syncConfirmedBookingToCalendar,
+} from '../services/booking-calendar-sync.js';
+import {
+  ensureZoomMeetingForBooking,
+  removeZoomMeetingForBooking,
+  type ZoomConfig,
+} from '../services/booking-zoom-sync.js';
 import { attachTagAndFireSideEffects } from '../services/friend-tag-attach.js';
 import {
   DEFAULT_ACCOUNT_SETTINGS,
@@ -29,6 +38,15 @@ import {
 } from '../services/booking-types.js';
 
 const booking = new Hono<Env>();
+
+function zoomConfig(c: Context<Env>): ZoomConfig {
+  return {
+    accountId: c.env.ZOOM_ACCOUNT_ID,
+    clientId: c.env.ZOOM_CLIENT_ID,
+    clientSecret: c.env.ZOOM_CLIENT_SECRET,
+    userId: c.env.ZOOM_USER_ID,
+  };
+}
 
 // ----------------------------------------------------------------
 // Helpers
@@ -177,7 +195,7 @@ async function notifyForBooking(
 ): Promise<void> {
   const row = await db
     .prepare(
-      `SELECT b.starts_at,
+      `SELECT b.starts_at, b.zoom_join_url,
               m.name AS menu_name,
               s.display_name AS staff_name,
               la.channel_access_token,
@@ -196,6 +214,7 @@ async function notifyForBooking(
       staff_name: string;
       channel_access_token: string;
       line_user_id: string;
+      zoom_join_url: string | null;
     }>();
   if (!row) return;
   await sendBookingNotification({
@@ -207,6 +226,7 @@ async function notifyForBooking(
       staffName: row.staff_name,
       startsAtJst: startsAtJst(row.starts_at),
       hoursBefore: 0,
+      joinUrl: row.zoom_join_url,
     },
   });
 }
@@ -533,7 +553,7 @@ booking.get('/api/booking/admin/menus', async (c) => {
     .prepare(
       `SELECT id, name, category_label, description,
               duration_minutes, buffer_after_minutes,
-              base_price, sort_order, is_active, auto_tag_id
+              base_price, sort_order, is_active, auto_tag_id, create_zoom_meeting
          FROM menus
         WHERE line_account_id = ? AND deleted_at IS NULL
         ORDER BY sort_order ASC, id ASC`,
@@ -555,6 +575,7 @@ booking.post('/api/booking/admin/menus', async (c) => {
     base_price: number;
     sort_order?: number;
     auto_tag_id?: string | null;
+    create_zoom_meeting?: boolean;
   }>();
   const autoTagId = (b.auto_tag_id ?? '').trim() === '' ? null : (b.auto_tag_id as string);
   if (autoTagId) {
@@ -569,8 +590,9 @@ booking.post('/api/booking/admin/menus', async (c) => {
     .prepare(
       `INSERT INTO menus
         (id, line_account_id, name, category_label, description,
-         duration_minutes, buffer_after_minutes, base_price, sort_order, auto_tag_id)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+         duration_minutes, buffer_after_minutes, base_price, sort_order, auto_tag_id,
+         create_zoom_meeting)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .bind(
       id,
@@ -583,6 +605,7 @@ booking.post('/api/booking/admin/menus', async (c) => {
       b.base_price,
       b.sort_order ?? 0,
       autoTagId,
+      b.create_zoom_meeting ? 1 : 0,
     )
     .run();
   return c.json({ id }, 201);
@@ -602,6 +625,7 @@ booking.put('/api/booking/admin/menus/:id', async (c) => {
     sort_order?: number;
     is_active?: boolean;
     auto_tag_id?: string | null;
+    create_zoom_meeting?: boolean;
   }>();
   // PUT は古いクライアントが auto_tag_id フィールドを送らない場合がある。`undefined` を
   // null として書き込むと既存設定を消してしまうため、key 存在チェックで「明示的に送られた
@@ -624,6 +648,7 @@ booking.put('/api/booking/admin/menus/:id', async (c) => {
             SET name = ?, category_label = ?, description = ?,
                 duration_minutes = ?, buffer_after_minutes = ?,
                 base_price = ?, sort_order = ?, is_active = ?, auto_tag_id = ?,
+                create_zoom_meeting = COALESCE(?, create_zoom_meeting),
                 updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
           WHERE id = ? AND line_account_id = ?`,
       )
@@ -637,6 +662,7 @@ booking.put('/api/booking/admin/menus/:id', async (c) => {
         b.sort_order ?? 0,
         b.is_active === false ? 0 : 1,
         autoTagId,
+        b.create_zoom_meeting === undefined ? null : (b.create_zoom_meeting ? 1 : 0),
         id,
         accountId,
       )
@@ -648,6 +674,7 @@ booking.put('/api/booking/admin/menus/:id', async (c) => {
             SET name = ?, category_label = ?, description = ?,
                 duration_minutes = ?, buffer_after_minutes = ?,
                 base_price = ?, sort_order = ?, is_active = ?,
+                create_zoom_meeting = COALESCE(?, create_zoom_meeting),
                 updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
           WHERE id = ? AND line_account_id = ?`,
       )
@@ -660,6 +687,7 @@ booking.put('/api/booking/admin/menus/:id', async (c) => {
         b.base_price,
         b.sort_order ?? 0,
         b.is_active === false ? 0 : 1,
+        b.create_zoom_meeting === undefined ? null : (b.create_zoom_meeting ? 1 : 0),
         id,
         accountId,
       )
@@ -874,11 +902,22 @@ booking.post('/api/booking/admin/bookings', async (c) => {
     startsAt,
     now: new Date(),
   });
-  c.executionCtx.waitUntil(
-    notifyForBooking(c.env.DB, bookingId, 'approved').catch((err) =>
-      console.error('booking notify (proxy-create) failed:', err),
-    ),
-  );
+  c.executionCtx.waitUntil((async () => {
+    // Zoom must be stored first so both Calendar and the LINE message can read
+    // and include the same customer join URL.
+    await ensureZoomMeetingForBooking(c.env.DB, bookingId, zoomConfig(c)).catch((err) =>
+      console.error('booking Zoom sync (proxy-create) failed:', err),
+    );
+    await Promise.all([
+      syncConfirmedBookingToCalendar(c.env.DB, bookingId, {
+        clientId: c.env.GOOGLE_CLIENT_ID,
+        clientSecret: c.env.GOOGLE_CLIENT_SECRET,
+      }).catch((err) => console.error('booking calendar sync (proxy-create) failed:', err)),
+      notifyForBooking(c.env.DB, bookingId, 'approved').catch((err) =>
+        console.error('booking notify (proxy-create) failed:', err),
+      ),
+    ]);
+  })());
   return c.json({ booking_id: bookingId, status: 'confirmed' }, 201);
 });
 
@@ -1236,12 +1275,34 @@ booking.patch('/api/booking/admin/requests/:id', async (c) => {
       startsAt: new Date(row.starts_at),
       now: new Date(),
     });
+    c.executionCtx.waitUntil((async () => {
+      await ensureZoomMeetingForBooking(c.env.DB, id, zoomConfig(c)).catch((err) =>
+        console.error('booking Zoom sync (confirmed) failed:', err),
+      );
+      await Promise.all([
+        syncConfirmedBookingToCalendar(c.env.DB, id, {
+          clientId: c.env.GOOGLE_CLIENT_ID,
+          clientSecret: c.env.GOOGLE_CLIENT_SECRET,
+        }).catch((err) => console.error('booking calendar sync (confirmed) failed:', err)),
+        notifyForBooking(c.env.DB, id, 'approved').catch((err) =>
+          console.error('booking notify (approved) failed:', err),
+        ),
+      ]);
+    })());
+  } else if (next === 'rejected') {
     c.executionCtx.waitUntil(
-      notifyForBooking(c.env.DB, id, 'approved').catch((err) =>
-        console.error('booking notify (approved) failed:', err),
+      removeBookingFromCalendar(c.env.DB, id, {
+        clientId: c.env.GOOGLE_CLIENT_ID,
+        clientSecret: c.env.GOOGLE_CLIENT_SECRET,
+      }).catch((err) =>
+        console.error('booking calendar sync (rejected) failed:', err),
       ),
     );
-  } else if (next === 'rejected') {
+    c.executionCtx.waitUntil(
+      removeZoomMeetingForBooking(c.env.DB, id, zoomConfig(c)).catch((err) =>
+        console.error('booking Zoom sync (rejected) failed:', err),
+      ),
+    );
     c.executionCtx.waitUntil(
       notifyForBooking(c.env.DB, id, 'rejected').catch((err) =>
         console.error('booking notify (rejected) failed:', err),
@@ -1254,6 +1315,19 @@ booking.patch('/api/booking/admin/requests/:id', async (c) => {
       )
       .bind(id)
       .run();
+    c.executionCtx.waitUntil(
+      removeBookingFromCalendar(c.env.DB, id, {
+        clientId: c.env.GOOGLE_CLIENT_ID,
+        clientSecret: c.env.GOOGLE_CLIENT_SECRET,
+      }).catch((err) =>
+        console.error('booking calendar sync (cancelled) failed:', err),
+      ),
+    );
+    c.executionCtx.waitUntil(
+      removeZoomMeetingForBooking(c.env.DB, id, zoomConfig(c)).catch((err) =>
+        console.error('booking Zoom sync (cancelled) failed:', err),
+      ),
+    );
   }
 
   return c.json({ status: next });
@@ -1271,6 +1345,17 @@ booking.get('/api/booking/admin/pending-count', async (c) => {
     .bind(accountId)
     .first<{ cnt: number }>();
   return c.json({ count: row?.cnt ?? 0 });
+});
+
+booking.get('/api/booking/admin/zoom-status', async (c) => {
+  const accountId = await resolveAccountIdAdmin(c);
+  if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
+  return c.json({
+    configured: Boolean(
+      c.env.ZOOM_ACCOUNT_ID && c.env.ZOOM_CLIENT_ID && c.env.ZOOM_CLIENT_SECRET &&
+      c.env.ZOOM_USER_ID,
+    ),
+  });
 });
 
 export default booking;

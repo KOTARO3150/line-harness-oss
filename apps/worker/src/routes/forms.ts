@@ -12,6 +12,7 @@ import {
 } from '@line-crm/db';
 import { getFriendByLineUserId, getFriendById } from '@line-crm/db';
 import { addTagToFriend, enrollFriendInScenario } from '@line-crm/db';
+import { matchingConditionalTagIds } from '../services/form-field-rules.js';
 import type {
   Form as DbForm,
   FormSubmission as DbFormSubmission,
@@ -50,12 +51,13 @@ function serializeForm(
   };
 }
 
-function serializeSubmission(row: DbFormSubmission & { friend_name?: string | null }) {
+function serializeSubmission(row: DbFormSubmission & { friend_name?: string | null; friend_tags_json?: string }) {
   return {
     id: row.id,
     formId: row.form_id,
     friendId: row.friend_id,
     friendName: row.friend_name || null,
+    friendTags: JSON.parse(row.friend_tags_json || '[]') as Array<{ id: string; name: string; color: string }>,
     data: JSON.parse(row.data || '{}') as Record<string, unknown>,
     createdAt: row.created_at,
   };
@@ -450,6 +452,20 @@ forms.post('/api/forms/:id/submit', async (c) => {
       // Add tag
       if (form.on_submit_tag_id) {
         sideEffects.push(addTagToFriend(db, friendId, form.on_submit_tag_id));
+      }
+
+      // Add tags whose per-question answer conditions match. Form fields are
+      // configuration authored by staff; invalid or old field JSON is ignored.
+      try {
+        const configuredFields = JSON.parse(form.fields || '[]') as Array<{
+          name: string;
+          tagRules?: Array<{ operator: 'equals' | 'contains' | 'not_empty'; value?: string; tagId: string }>;
+        }>;
+        const conditionalTagIds = matchingConditionalTagIds(configuredFields, submissionData)
+          .filter((tagId) => tagId !== form.on_submit_tag_id);
+        for (const tagId of conditionalTagIds) sideEffects.push(addTagToFriend(db, friendId, tagId));
+      } catch (cause) {
+        console.error('Form conditional tag configuration is invalid:', cause);
       }
 
       // Enroll in scenario

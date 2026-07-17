@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import Link from 'next/link'
 import { parseStickerMessageContent, stickerFallback } from '@line-crm/shared'
 import { api, fetchApi } from '@/lib/api'
 import { UNANSWERED_REFRESH_EVENT } from '@/lib/events'
@@ -238,6 +239,7 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
           <p className="text-sm font-bold text-gray-900">{friend?.displayName || '不明'}</p>
           <p className="text-xs text-gray-400">メッセージ履歴</p>
         </div>
+        <Link href={`/charts/detail?friend=${encodeURIComponent(friendId)}`} className="ml-auto rounded-lg border border-green-200 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-50">相談カルテ</Link>
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {loadingMessages ? (

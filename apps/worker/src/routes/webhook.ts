@@ -33,6 +33,51 @@ const webhook = new Hono<Env>();
 // 128 MB Cloudflare Workers memory ceiling.
 const MAX_WEBHOOK_BODY_SIZE = 1024 * 1024; // 1 MiB
 
+async function forwardVerifiedWebhook(
+  forwardUrl: string | undefined,
+  requestUrl: string,
+  rawBody: string,
+  signature: string,
+): Promise<void> {
+  if (!forwardUrl) return;
+
+  let target: URL;
+  try {
+    target = new URL(forwardUrl);
+  } catch {
+    console.error('[webhook-relay] Invalid forward URL');
+    return;
+  }
+
+  const current = new URL(requestUrl);
+  if (target.protocol !== 'https:') {
+    console.error('[webhook-relay] Forward URL must use HTTPS');
+    return;
+  }
+  if (target.origin === current.origin && target.pathname === current.pathname) {
+    console.error('[webhook-relay] Refusing to forward webhook to itself');
+    return;
+  }
+
+  try {
+    const response = await fetch(target.toString(), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Line-Signature': signature,
+        'X-Line-Webhook-Relay': 'line-harness',
+      },
+      body: rawBody,
+      redirect: 'manual',
+    });
+    if (!response.ok) {
+      console.error(`[webhook-relay] Legacy endpoint returned ${response.status}`);
+    }
+  } catch (err) {
+    console.error('[webhook-relay] Failed to forward verified webhook', err);
+  }
+}
+
 async function ensureFriendFromWebhookUser(
   db: D1Database,
   lineClient: LineClient,
@@ -171,7 +216,16 @@ webhook.post('/webhook', async (c) => {
     }
   })();
 
-  c.executionCtx.waitUntil(processingPromise);
+  // The legacy provider receives the exact signed payload in parallel with
+  // local processing. A relay failure is logged but must not make LINE retry
+  // an event that L Harness already accepted.
+  const forwardingPromise = forwardVerifiedWebhook(
+    c.env.LINE_WEBHOOK_FORWARD_URL,
+    c.req.url,
+    rawBody,
+    signature,
+  );
+  c.executionCtx.waitUntil(Promise.all([processingPromise, forwardingPromise]));
 
   return c.json({ status: 'ok' }, 200);
 });

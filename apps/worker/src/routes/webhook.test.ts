@@ -1,4 +1,4 @@
-import { describe, expect, test, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const lineClientMocks = vi.hoisted(() => ({
@@ -91,6 +91,10 @@ beforeEach(() => {
   vi.mocked(getLineAccounts).mockResolvedValue([]);
 });
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe('POST /webhook — DoS defenses (#104)', () => {
   test('rejects with 413 when Content-Length declares an oversized body', async () => {
     const app = setupApp();
@@ -180,6 +184,87 @@ describe('POST /webhook — DoS defenses (#104)', () => {
     expect(res.status).toBe(200);
     // Fast-rejected before any crypto / DB work.
     expect(verifySignature).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /webhook — legacy provider relay', () => {
+  test('forwards a verified payload byte-for-byte with the original LINE signature', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    const relayFetch = vi.fn().mockResolvedValue(new Response('', { status: 200 }));
+    vi.stubGlobal('fetch', relayFetch);
+
+    const app = setupApp();
+    const signature = 'A'.repeat(43) + '=';
+    const rawBody = '{"destination":"bot","events":[]}';
+    const executionCtx = {
+      waitUntil: vi.fn(),
+      passThroughOnException: vi.fn(),
+      props: {},
+    } as unknown as ExecutionContext;
+
+    const res = await app.request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Line-Signature': signature,
+        },
+        body: rawBody,
+      },
+      {
+        ...baseEnv,
+        LINE_WEBHOOK_FORWARD_URL: 'https://autosns.jp/webhook/test-id',
+      },
+      executionCtx,
+    );
+
+    expect(res.status).toBe(200);
+    const backgroundWork = vi.mocked(executionCtx.waitUntil).mock.calls[0]?.[0] as Promise<unknown>;
+    await backgroundWork;
+
+    expect(relayFetch).toHaveBeenCalledTimes(1);
+    expect(relayFetch).toHaveBeenCalledWith(
+      'https://autosns.jp/webhook/test-id',
+      expect.objectContaining({
+        method: 'POST',
+        body: rawBody,
+        redirect: 'manual',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Line-Signature': signature,
+          'X-Line-Webhook-Relay': 'line-harness',
+        },
+      }),
+    );
+  });
+
+  test('does not forward a payload whose LINE signature is invalid', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(false);
+    const relayFetch = vi.fn();
+    vi.stubGlobal('fetch', relayFetch);
+
+    const app = setupApp();
+    const res = await app.request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Line-Signature': 'A'.repeat(43) + '=',
+        },
+        body: '{"events":[]}',
+      },
+      {
+        ...baseEnv,
+        LINE_WEBHOOK_FORWARD_URL: 'https://autosns.jp/webhook/test-id',
+      },
+      baseExecutionCtx,
+    );
+
+    expect(res.status).toBe(200);
+    expect(relayFetch).not.toHaveBeenCalled();
+    expect(baseExecutionCtx.waitUntil).not.toHaveBeenCalled();
   });
 });
 

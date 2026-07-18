@@ -96,6 +96,10 @@ export type Env = {
     ASSETS: Fetcher;
     LINE_CHANNEL_SECRET: string;
     LINE_CHANNEL_ACCESS_TOKEN: string;
+    // Optional compatibility relay. When set, verified LINE webhook payloads
+    // are forwarded byte-for-byte (with the original signature) to the legacy
+    // provider so migration can proceed without interrupting its operation.
+    LINE_WEBHOOK_FORWARD_URL?: string;
     API_KEY: string;
     LEGACY_API_KEY?: string;
     LIFF_URL: string;

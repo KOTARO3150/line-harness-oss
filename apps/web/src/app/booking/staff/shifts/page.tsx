@@ -37,6 +37,8 @@ export default function StaffShiftsPage() {
   const [error, setError] = useState<string | null>(null)
   const [tpl, setTpl] = useState(DEFAULT_TEMPLATE)
   const [weeks, setWeeks] = useState(4)
+  const [excludeJapaneseHolidays, setExcludeJapaneseHolidays] = useState(true)
+  const [excludeSeasonalClosures, setExcludeSeasonalClosures] = useState(true)
   // toISOString は UTC なので 00:00〜09:00 JST に開いた場合、初期値が前日になる。
   // JST 基準の YYYY-MM-DD に補正。
   const [fromDate, setFromDate] = useState(
@@ -86,6 +88,8 @@ export default function StaffShiftsPage() {
         from_date: fromDate,
         weeks,
         weekly_template: tpl,
+        exclude_japanese_holidays: excludeJapaneseHolidays,
+        exclude_seasonal_closures: excludeSeasonalClosures,
       })
       setSavedAt(Date.now())
       console.info(`generated ${r.inserted} shifts`)
@@ -188,6 +192,24 @@ export default function StaffShiftsPage() {
                 )
               })}
               <div className="flex flex-wrap items-center gap-3 pt-3 border-t border-gray-100 mt-3">
+                <label className="w-full text-xs text-gray-700 flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={excludeJapaneseHolidays}
+                    onChange={(e) => setExcludeJapaneseHolidays(e.target.checked)}
+                    className="w-4 h-4"
+                  />
+                  日本の祝日・振替休日を自動で休みにする
+                </label>
+                <label className="w-full text-xs text-gray-700 flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={excludeSeasonalClosures}
+                    onChange={(e) => setExcludeSeasonalClosures(e.target.checked)}
+                    className="w-4 h-4"
+                  />
+                  お盆（8/13〜16）・年末年始（12/29〜1/3）を自動で休みにする
+                </label>
                 <label className="text-xs text-gray-600 flex items-center gap-2">
                   開始日
                   <input

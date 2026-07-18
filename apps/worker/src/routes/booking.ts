@@ -15,6 +15,7 @@ import { getLineAccounts } from '@line-crm/db';
 import type { Env } from '../index.js';
 import { canTransition, nextStatus, type BookingAction } from '../services/booking-state.js';
 import { computeSlots, getAvailability } from '../services/availability.js';
+import { isJapaneseHoliday, isSeasonalClosure } from '../services/japanese-business-calendar.js';
 import {
   findIdempotencyResponse,
   saveIdempotencyResponse,
@@ -1210,6 +1211,8 @@ booking.post('/api/booking/admin/staff/:id/shifts/generate', async (c) => {
       'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat',
       { start: string; end: string } | null
     >;
+    exclude_japanese_holidays?: boolean;
+    exclude_seasonal_closures?: boolean;
   }>();
   if (!b.from_date || !b.weeks || !b.weekly_template) {
     return c.json({ error: 'missing_params' }, 400);
@@ -1222,6 +1225,9 @@ booking.post('/api/booking/admin/staff/:id/shifts/generate', async (c) => {
     d.setUTCDate(start.getUTCDate() + i);
     const tpl = b.weekly_template[dayKeys[d.getUTCDay()]];
     if (!tpl) continue;
+    const workDate = d.toISOString().slice(0, 10);
+    if (b.exclude_japanese_holidays && isJapaneseHoliday(workDate)) continue;
+    if (b.exclude_seasonal_closures && isSeasonalClosure(workDate)) continue;
     stmts.push(
       c.env.DB
         .prepare(
@@ -1229,7 +1235,7 @@ booking.post('/api/booking/admin/staff/:id/shifts/generate', async (c) => {
            VALUES (?, ?, ?, ?, ?)
            ON CONFLICT(staff_id, work_date) DO NOTHING`,
         )
-        .bind(crypto.randomUUID(), staffId, d.toISOString().slice(0, 10), tpl.start, tpl.end),
+        .bind(crypto.randomUUID(), staffId, workDate, tpl.start, tpl.end),
     );
   }
   if (stmts.length === 0) return c.json({ inserted: 0 });

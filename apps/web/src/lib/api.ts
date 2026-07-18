@@ -1604,6 +1604,8 @@ export const bookingApi = {
       from_date: string;
       weeks: number;
       weekly_template: Record<string, { start: string; end: string } | null>;
+      exclude_japanese_holidays?: boolean;
+      exclude_seasonal_closures?: boolean;
     },
   ) =>
     fetchApi<{ inserted: number }>(

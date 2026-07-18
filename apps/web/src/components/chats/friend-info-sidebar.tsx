@@ -112,7 +112,7 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName }
   if (!friendId) return null
 
   return (
-    <div className="w-full lg:w-80 lg:flex-shrink-0 bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col overflow-hidden">
+    <div className="w-full min-w-0 bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col overflow-hidden">
       <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
         <h3 className="text-sm font-semibold text-gray-700">友だち詳細</h3>
       </div>

@@ -820,9 +820,9 @@ export default function ChatsPage() {
         </div>
       )}
 
-      <div className="flex gap-4 h-[calc(100vh-120px)] lg:h-[calc(100vh-180px)]">
+      <div className="flex min-w-0 gap-4 h-[calc(100vh-120px)] lg:h-[calc(100vh-180px)]">
         {/* Left Panel: Chat List */}
-        <div className={`w-full lg:w-96 lg:flex-shrink-0 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId ? 'hidden lg:flex' : 'flex'}`}>
+        <div className={`w-full lg:w-80 lg:flex-shrink-0 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId ? 'hidden lg:flex' : 'flex'}`}>
           {/* タブ (全て / 未読 / 対応中 / 解決済) は意図的に削除。直近メッセージが見やすい LINE 風一覧を優先。 */}
 
           {/* Filter row */}
@@ -949,7 +949,7 @@ export default function ChatsPage() {
         </div>
 
         {/* Right Panel: Chat Detail */}
-        <div className={`flex-1 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId || selectedFriendId ? 'flex' : 'hidden lg:flex'}`}>
+        <div className={`min-w-0 min-h-0 flex-1 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId || selectedFriendId ? 'flex' : 'hidden lg:flex'}`}>
           {selectedFriendId && !selectedChatId ? (
             /* Direct message to friend without existing chat */
             <DirectMessagePanel
@@ -1042,7 +1042,7 @@ export default function ChatsPage() {
               </div>
 
               {/* Messages — LINE-style chat bubbles */}
-              <div ref={messagesScrollRef} className="flex-1 overflow-y-auto p-4 space-y-2" style={{ backgroundColor: '#7494C0' }}>
+              <div ref={messagesScrollRef} className="min-h-[140px] flex-1 overflow-y-auto p-4 space-y-2" style={{ backgroundColor: '#7494C0' }}>
                 {(!chatDetail.messages || chatDetail.messages.length === 0) ? (
                   <div className="text-center py-8">
                     <p className="text-white/60 text-sm">メッセージはまだありません。</p>
@@ -1142,7 +1142,7 @@ export default function ChatsPage() {
               </div>
 
               {/* Send Message Form */}
-              <div className="px-4 py-3 border-t border-gray-200">
+              <div className="max-h-[48%] flex-shrink-0 overflow-y-auto px-4 py-3 border-t border-gray-200">
                 <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-gray-600">
                   <label className="inline-flex items-center gap-2 cursor-pointer select-none">
                     <input
@@ -1189,6 +1189,7 @@ export default function ChatsPage() {
                     value={pendingImage}
                     onChange={setPendingImage}
                     label="画像を送る (任意)"
+                    compact
                   />
                 </div>
                 <div className="mb-2 flex items-center gap-2">
@@ -1270,7 +1271,7 @@ export default function ChatsPage() {
           直接渡せる (chat list SQL が `id: f.id` で friend_id を返す)。
         */}
         {(selectedChatId || selectedFriendId) && (
-          <div className="hidden xl:flex">
+          <div className="hidden w-72 flex-shrink-0 xl:flex">
             <FriendInfoSidebar
               friendId={selectedFriendId || selectedChatId}
               chatStatus={

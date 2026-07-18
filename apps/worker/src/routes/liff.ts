@@ -25,6 +25,7 @@ import {
 import { buildIntroMessage } from '../services/intro-message.js';
 import { notifyAffiliateFriendAdd } from '../services/affiliate-notifier.js';
 import { safeRedirectTarget } from '../lib/safe-redirect.js';
+import { LineClient } from '@line-crm/line-sdk';
 import type { Env } from '../index.js';
 
 const liffRoutes = new Hono<Env>();
@@ -1283,13 +1284,17 @@ liffRoutes.post('/api/liff/link', async (c) => {
     }
 
     let verifyRes: Response | null = null;
+    let verifiedChannelId: string | null = null;
     for (const channelId of loginChannelIds) {
       verifyRes = await fetch('https://api.line.me/oauth2/v2.1/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ id_token: body.idToken, client_id: channelId }),
       });
-      if (verifyRes.ok) break;
+      if (verifyRes.ok) {
+        verifiedChannelId = channelId;
+        break;
+      }
     }
 
     if (!verifyRes?.ok) {
@@ -1301,9 +1306,37 @@ liffRoutes.post('/api/liff/link', async (c) => {
     const email = verified.email || null;
 
     const db = c.env.DB;
-    const friend = await getFriendByLineUserId(db, lineUserId);
+    let friend = await getFriendByLineUserId(db, lineUserId);
     if (!friend) {
-      return c.json({ success: false, error: 'Friend not found' }, 404);
+      // The customer may already have followed the official account before
+      // L Harness started receiving its webhooks. In that case no `friends`
+      // row exists yet even though LIFF's friendship check is true. Verify the
+      // relationship server-side through the linked Messaging API account,
+      // then safely import the profile before continuing.
+      const matchedAccount = dbAccounts.find((acct) =>
+        acct.login_channel_id === verifiedChannelId ||
+        acct.liff_id?.startsWith(`${verifiedChannelId}-`),
+      );
+      if (!matchedAccount?.channel_access_token) {
+        return c.json({ success: false, error: 'Friend not found' }, 404);
+      }
+      try {
+        const profile = await new LineClient(matchedAccount.channel_access_token).getProfile(lineUserId);
+        friend = await upsertFriend(db, {
+          lineUserId,
+          displayName: profile.displayName || body.displayName || null,
+          pictureUrl: profile.pictureUrl || null,
+          statusMessage: profile.statusMessage || null,
+        });
+        await db
+          .prepare('UPDATE friends SET line_account_id = ?, updated_at = ? WHERE id = ?')
+          .bind(matchedAccount.id, jstNow(), friend.id)
+          .run();
+        friend = (await getFriendByLineUserId(db, lineUserId))!;
+      } catch (err) {
+        console.warn('LIFF friend import failed:', err);
+        return c.json({ success: false, error: 'Friend not found' }, 404);
+      }
     }
 
     // IG cross-link: runs regardless of already-linked vs new-link branch so

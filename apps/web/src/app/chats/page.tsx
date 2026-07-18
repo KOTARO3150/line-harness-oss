@@ -141,6 +141,14 @@ interface MessageLog {
   createdAt: string
 }
 
+interface ChatTemplate {
+  id: string
+  name: string
+  category: string
+  messageType: string
+  messageContent: string
+}
+
 function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
   friendId: string
   friend: FriendItem | null
@@ -329,6 +337,8 @@ export default function ChatsPage() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState('')
   const [messageContent, setMessageContent] = useState('')
+  const [chatTemplates, setChatTemplates] = useState<ChatTemplate[]>([])
+  const [templatesLoading, setTemplatesLoading] = useState(true)
   const [pendingImage, setPendingImage] = useState<ImageUploaderValue | null>(null)
   const [sending, setSending] = useState(false)
   const sendLockRef = useRef(false)
@@ -341,6 +351,35 @@ export default function ChatsPage() {
   const isComposingRef = useRef(false)
   const messagesScrollRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const loadTemplates = async () => {
+      setTemplatesLoading(true)
+      try {
+        const res = await api.templates.list()
+        if (!cancelled && res.success) {
+          setChatTemplates(
+            res.data
+              .filter((template) => template.messageType === 'text')
+              .map(({ id, name, category, messageType, messageContent }) => ({
+                id,
+                name,
+                category,
+                messageType,
+                messageContent,
+              })),
+          )
+        }
+      } catch {
+        // Chat sending must remain available even when template loading fails.
+      } finally {
+        if (!cancelled) setTemplatesLoading(false)
+      }
+    }
+    void loadTemplates()
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     try {
@@ -1151,6 +1190,37 @@ export default function ChatsPage() {
                     onChange={setPendingImage}
                     label="画像を送る (任意)"
                   />
+                </div>
+                <div className="mb-2 flex items-center gap-2">
+                  <label htmlFor="chat-template" className="text-xs font-medium text-gray-600 whitespace-nowrap">
+                    テンプレート
+                  </label>
+                  <select
+                    id="chat-template"
+                    value=""
+                    onChange={(e) => {
+                      const template = chatTemplates.find((item) => item.id === e.target.value)
+                      if (!template) return
+                      setMessageContent(template.messageContent)
+                      window.requestAnimationFrame(() => textareaRef.current?.focus())
+                    }}
+                    disabled={templatesLoading || chatTemplates.length === 0}
+                    className="min-w-0 flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white disabled:bg-gray-100 disabled:text-gray-400"
+                    aria-label="返信テンプレートを選択"
+                  >
+                    <option value="">
+                      {templatesLoading
+                        ? '読み込み中...'
+                        : chatTemplates.length === 0
+                          ? 'テキストテンプレートがありません'
+                          : 'テンプレートを選ぶ'}
+                    </option>
+                    {chatTemplates.map((template) => (
+                      <option key={template.id} value={template.id}>
+                        {template.category ? `[${template.category}] ` : ''}{template.name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div className="flex items-end gap-2">
                   <textarea

@@ -35,6 +35,57 @@ type ChartField = keyof Pick<ConsultationChart, 'customer_name' | 'customer_name
 type RecordField = keyof Pick<ConsultationRecord, 'chief_complaint' | 'observations' | 'recommendation' | 'products' | 'usage_instructions' | 'follow_up_plan'>
 type ChartSuggestion = { field: ChartField; label: string; value: string; selected: boolean }
 
+const CHAT_IMPORT_HEADINGS: Array<{ field: RecordField; labels: string[] }> = [
+  { field: 'chief_complaint', labels: ['主な相談内容', '主訴', '症状', 'お客様の心配事'] },
+  { field: 'observations', labels: ['経過', '観察・聞き取り', '事実', '生活状況', '検査結果'] },
+  { field: 'recommendation', labels: ['鈴木先生の考察', '考察', '説明した内容', '提案内容'] },
+  { field: 'products', labels: ['商品・処方内容', '使用中の漢方・健康食品'] },
+  { field: 'usage_instructions', labels: ['使用方法・服用方法'] },
+  { field: 'follow_up_plan', labels: ['次回確認事項', 'フォロー計画', '不明点'] },
+]
+
+function normalizeImportHeading(value: string) {
+  return value.trim().replace(/^[【\[\s#*]+|[】\]\s:*：]+$/g, '').trim()
+}
+
+function buildChatImportDraft(sourceTitle: string, rawText: string): Partial<ConsultationRecord> {
+  const headingMap = new Map<string, RecordField>()
+  for (const item of CHAT_IMPORT_HEADINGS) {
+    for (const label of item.labels) headingMap.set(label, item.field)
+  }
+  const sections = new Map<RecordField, string[]>()
+  const unclassified: string[] = []
+  let current: RecordField | null = null
+  for (const line of rawText.split(/\r?\n/)) {
+    const heading = headingMap.get(normalizeImportHeading(line))
+    if (heading) {
+      current = heading
+      continue
+    }
+    if (current) {
+      const values = sections.get(current) ?? []
+      values.push(line)
+      sections.set(current, values)
+    } else {
+      unclassified.push(line)
+    }
+  }
+  const clean = (field: RecordField) => (sections.get(field) ?? []).join('\n').trim()
+  const sourceNote = `【移行元】${sourceTitle.trim() || 'ChatGPT相談履歴'}\n【取込日】${new Date().toLocaleDateString('ja-JP')}\n【状態】内容確認前の下書き`
+  const rawRemainder = unclassified.join('\n').trim()
+  return {
+    ...EMPTY_RECORD,
+    consultation_at: localDateTimeValue(),
+    consultation_type: 'line',
+    chief_complaint: clean('chief_complaint') || 'ChatGPT相談履歴から移行（内容を確認してください）',
+    observations: [sourceNote, clean('observations'), rawRemainder ? `【原文・未分類】\n${rawRemainder}` : ''].filter(Boolean).join('\n\n'),
+    recommendation: clean('recommendation'),
+    products: clean('products'),
+    usage_instructions: clean('usage_instructions'),
+    follow_up_plan: clean('follow_up_plan') || '元のChatGPT相談履歴と照合し、不明点を次回確認する。',
+  }
+}
+
 const chartFieldLabels: Record<ChartField, string> = {
   customer_name: '氏名', customer_name_kana: 'ふりがな', birth_date: '生年月日', phone: '電話番号',
   allergies: 'アレルギー・禁忌', current_medications: '使用中の医薬品・商品',
@@ -59,6 +110,10 @@ export default function ChartDetailPage() {
   const [chartForm, setChartForm] = useState<Partial<ConsultationChart>>(EMPTY_CHART)
   const [recordForm, setRecordForm] = useState<Partial<ConsultationRecord>>(EMPTY_RECORD)
   const [showRecord, setShowRecord] = useState(false)
+  const [showChatImport, setShowChatImport] = useState(false)
+  const [chatImportTitle, setChatImportTitle] = useState('')
+  const [chatImportText, setChatImportText] = useState('')
+  const [chatImportConfirmed, setChatImportConfirmed] = useState(false)
   const [chartSuggestions, setChartSuggestions] = useState<ChartSuggestion[]>([])
   const [sendRecord, setSendRecord] = useState<ConsultationRecord | null>(null)
   const [followMessage, setFollowMessage] = useState(SAFE_FOLLOW_UP_MESSAGE)
@@ -146,6 +201,16 @@ export default function ChartDetailPage() {
       field, label: chartFieldLabels[field], value, selected: !String(chartForm[field] ?? '').trim(),
     })))
     setShowRecord(true)
+    window.setTimeout(() => document.getElementById('consultation-record-editor')?.scrollIntoView({ behavior: 'smooth' }), 0)
+  }
+
+  const prepareChatImport = () => {
+    if (!chatImportConfirmed || !chatImportText.trim()) return
+    setRecordForm(buildChatImportDraft(chatImportTitle, chatImportText.trim()))
+    setChartSuggestions([])
+    setShowChatImport(false)
+    setShowRecord(true)
+    setSaved('ChatGPT相談履歴を相談記録の下書きへ整理しました。元の履歴と照合し、修正してから保存してください。')
     window.setTimeout(() => document.getElementById('consultation-record-editor')?.scrollIntoView({ behavior: 'smooth' }), 0)
   }
 
@@ -241,11 +306,37 @@ export default function ChartDetailPage() {
       <section className="mt-6 rounded-xl border border-gray-200 bg-white p-5">
         <div className="flex items-center justify-between gap-3">
           <h2 className="font-semibold text-gray-900">相談履歴</h2>
-          <button type="button" disabled={!detail?.chart} onClick={() => setShowRecord(!showRecord)} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:bg-gray-300">+ 相談記録を追加</button>
+          <div className="flex flex-wrap justify-end gap-2">
+            <button type="button" disabled={!detail?.chart} onClick={() => { setShowChatImport(!showChatImport); setShowRecord(false); setChatImportConfirmed(false) }} className="rounded-lg border border-violet-300 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 disabled:opacity-40">ChatGPT履歴を取り込む</button>
+            <button type="button" disabled={!detail?.chart} onClick={() => { setShowRecord(!showRecord); setShowChatImport(false) }} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:bg-gray-300">+ 相談記録を追加</button>
+          </div>
         </div>
         {!detail?.chart && <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">先に基本カルテを保存すると、相談記録を追加できます。</p>}
+        {showChatImport && (
+          <div className="mt-4 rounded-xl border border-violet-200 bg-violet-50 p-4">
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              この画面ではAIによる推測を行いません。見出し付きの要約は項目別に整理し、それ以外の文章は「原文・未分類」として残します。
+            </div>
+            <div className="mt-4 grid gap-4">
+              <Input label="移行元のチャット名（例：ヤマダ様 ご相談）" value={chatImportTitle} onChange={(value) => { setChatImportTitle(value); setChatImportConfirmed(false) }} />
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-gray-600">ChatGPTの相談履歴または要約</span>
+                <textarea rows={12} value={chatImportText} onChange={(event) => { setChatImportText(event.target.value); setChatImportConfirmed(false) }} placeholder={'全文を貼り付けるか、次の見出しを付けた要約を貼り付けます。\n【主な相談内容】【経過】【鈴木先生の考察】【提案内容】【商品・処方内容】【次回確認事項】【不明点】'} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm" />
+              </label>
+              <label className="flex items-start gap-2 rounded-lg border border-red-200 bg-white p-3 text-sm text-red-800">
+                <input type="checkbox" checked={chatImportConfirmed} onChange={(event) => setChatImportConfirmed(event.target.checked)} className="mt-0.5 rounded border-gray-300" />
+                <span>このChatGPT履歴と、現在開いている「{detail?.chart?.customer_name || detail?.friend.display_name || 'お客様'}」が同一人物であることを確認しました。</span>
+              </label>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setShowChatImport(false)} className="rounded-lg border bg-white px-4 py-2 text-sm">閉じる</button>
+              <button type="button" disabled={!chatImportText.trim() || !chatImportConfirmed} onClick={prepareChatImport} className="rounded-lg bg-violet-600 px-5 py-2 text-sm font-semibold text-white disabled:opacity-40">確認用の下書きを作る</button>
+            </div>
+          </div>
+        )}
         {showRecord && (
           <div id="consultation-record-editor" className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-4">
+            {recordForm.observations?.includes('【移行元】') && <div className="mb-4 rounded-lg border border-violet-200 bg-white p-3 text-xs text-violet-800">ChatGPT相談履歴から作成した下書きです。事実・考察・別人の情報が混ざっていないか、元の履歴と照合してから保存してください。</div>}
             {recordForm.source_form_submission_id && <div className="mb-4 rounded-lg border border-blue-200 bg-white p-3 text-xs text-blue-800">フォーム回答を下書きへ取り込みました。内容を確認・修正してから保存してください。</div>}
             {chartSuggestions.length > 0 && (
               <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4">

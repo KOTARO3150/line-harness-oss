@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="鈴木薬舗OS">
+  <rect width="512" height="512" rx="112" fill="#06c755"/>
+  <rect x="22" y="22" width="468" height="468" rx="96" fill="none" stroke="#ffffff" stroke-opacity="0.22" stroke-width="8"/>
+  <text x="256" y="326" fill="#ffffff" font-family="Hiragino Sans, Yu Gothic, sans-serif" font-size="262" font-weight="700" text-anchor="middle">鈴</text>
+</svg>

@@ -1,0 +1,25 @@
+{
+  "name": "鈴木薬舗OS",
+  "short_name": "鈴木薬舗OS",
+  "description": "相談カルテ・LINEお客様対応・予約管理を一つにまとめた鈴木薬舗の業務システム",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f9fafb",
+  "theme_color": "#06c755",
+  "lang": "ja",
+  "icons": [
+    {
+      "src": "/icons/suzuki-yakupo-os-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/suzuki-yakupo-os-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

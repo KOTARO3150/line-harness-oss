@@ -5,7 +5,7 @@ import DateTimePicker from '../components/DateTimePicker.js';
 import Confirm from '../components/Confirm.js';
 import Done from '../components/Done.js';
 import { useSalonContext } from '../lib/context.js';
-import { createApi, type MenuItem, type StaffItem } from '../lib/api.js';
+import { createApi, type BookingRequestResult, type MenuItem, type StaffItem } from '../lib/api.js';
 
 type Step = 'menu' | 'staff' | 'datetime' | 'confirm' | 'done';
 
@@ -30,6 +30,7 @@ export default function Booking({
   const [menu, setMenu] = useState<MenuItem | null>(null);
   const [staff, setStaff] = useState<StaffItem | null>(null);
   const [slot, setSlot] = useState<{ date: string; start: string } | null>(null);
+  const [requestResult, setRequestResult] = useState<BookingRequestResult | null>(null);
   // ?menu_id=... が指定されたら、メニュー一覧をスキップして staff から開始。
   // 該当 menu が無効/未公開だった場合は通常フローに fallback（黙って全
   // メニュー一覧を出す方が「初回オリエン直リンク経由なのに別メニュー
@@ -206,11 +207,14 @@ export default function Booking({
           menu={menu}
           staff={staff}
           slot={slot}
-          onSubmitted={() => setStep('done')}
+          onSubmitted={(result) => {
+            setRequestResult(result);
+            setStep('done');
+          }}
           onBack={() => setStep('datetime')}
         />
       )}
-      {step === 'done' && <Done />}
+      {step === 'done' && <Done result={requestResult} />}
     </div>
   );
 }

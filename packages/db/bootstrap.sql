@@ -183,6 +183,10 @@ CREATE TABLE bookings (
   zoom_meeting_id         TEXT,
   zoom_join_url           TEXT,
   zoom_start_url          TEXT,                 -- host-only; never sent to customers
+  is_first_consultation   INTEGER NOT NULL DEFAULT 0,
+  payment_status          TEXT NOT NULL DEFAULT 'not_required' CHECK (payment_status IN ('not_required','pending','paid','refunded')),
+  payment_confirmed_at    TEXT,
+  payment_confirmed_by_staff_id TEXT,
   created_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   FOREIGN KEY (line_account_id) REFERENCES line_accounts(id),
@@ -526,6 +530,8 @@ CREATE TABLE menus (
   deleted_at            TEXT,
   auto_tag_id           TEXT,                  -- 予約申込時に friend に自動付与するタグ
   create_zoom_meeting   INTEGER NOT NULL DEFAULT 0,
+  paypal_payment_url    TEXT,
+  require_paypal_first_booking INTEGER NOT NULL DEFAULT 0,
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   FOREIGN KEY (line_account_id) REFERENCES line_accounts(id),
@@ -867,6 +873,7 @@ CREATE INDEX idx_automations_event ON automations (event_type);
 CREATE INDEX idx_bookings_account_status_starts ON bookings (line_account_id, status, starts_at);
 
 CREATE INDEX idx_bookings_friend_starts ON bookings (friend_id, starts_at DESC);
+CREATE INDEX idx_bookings_payment_status ON bookings (line_account_id, payment_status, starts_at);
 
 CREATE INDEX idx_bookings_staff_overlap ON bookings (staff_id, status, starts_at, block_ends_at);
 

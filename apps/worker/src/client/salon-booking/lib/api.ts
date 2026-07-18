@@ -42,6 +42,13 @@ export interface BookingHistoryItem {
   profile_image_url: string | null;
 }
 
+export interface BookingRequestResult {
+  booking_id: string;
+  status: string;
+  payment_status: 'not_required' | 'pending' | 'paid' | 'refunded';
+  paypal_payment_url: string | null;
+}
+
 function authHeaders(ctx: SalonBookingContext, extra: Record<string, string> = {}): Record<string, string> {
   return { Authorization: `Bearer ${ctx.idToken}`, ...extra };
 }
@@ -100,7 +107,7 @@ export function createApi(ctx: SalonBookingContext) {
       body: { menu_id: string; staff_id: string; starts_at: string; customer_note?: string },
       idempotencyKey: string,
     ) =>
-      post<{ booking_id: string; status: string }>(
+      post<BookingRequestResult>(
         '/api/liff/booking/requests',
         body,
         ctx,

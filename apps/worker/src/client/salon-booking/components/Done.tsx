@@ -1,6 +1,7 @@
 import { useSalonContext } from '../lib/context.js';
+import type { BookingRequestResult } from '../lib/api.js';
 
-export default function Done() {
+export default function Done({ result }: { result: BookingRequestResult | null }) {
   const ctx = useSalonContext();
   function gotoHistory() {
     const url = new URL(window.location.href);
@@ -24,12 +25,29 @@ export default function Done() {
         >
           ✓
         </div>
-        <h1 className="text-lg font-bold text-gray-900 mt-4">リクエストを送信しました</h1>
-        <p className="text-sm text-gray-600 mt-3 leading-relaxed">
-          お店からの返信をお待ちください。
-          <br />
-          確定すると LINE に通知が届きます。
-        </p>
+        <h1 className="text-lg font-bold text-gray-900 mt-4">
+          {result?.payment_status === 'pending' ? '予約受付・お支払い待ち' : 'リクエストを送信しました'}
+        </h1>
+        {result?.payment_status === 'pending' && result.paypal_payment_url ? (
+          <div className="mt-3">
+            <p className="text-sm text-gray-600 leading-relaxed">
+              初回相談はPayPalでのお支払い後に予約が確定します。
+            </p>
+            <a
+              href={result.paypal_payment_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block mt-4 py-3.5 rounded-xl font-bold text-sm text-white"
+              style={{ background: '#0070ba' }}
+            >
+              PayPalで支払う
+            </a>
+          </div>
+        ) : (
+          <p className="text-sm text-gray-600 mt-3 leading-relaxed">
+            お店からの返信をお待ちください。<br />確定すると LINE に通知が届きます。
+          </p>
+        )}
         <div className="grid grid-cols-2 gap-2 mt-6">
           <button
             onClick={gotoHistory}

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { createApi, type MenuItem, type StaffItem } from '../lib/api.js';
+import { createApi, type BookingRequestResult, type MenuItem, type StaffItem } from '../lib/api.js';
 import { useSalonContext } from '../lib/context.js';
 import { jstStartsAtIso, formatJp } from '../lib/datetime.js';
 
@@ -13,7 +13,7 @@ export default function Confirm({
   menu: MenuItem;
   staff: StaffItem;
   slot: { date: string; start: string };
-  onSubmitted: () => void;
+  onSubmitted: (result: BookingRequestResult) => void;
   onBack: () => void;
 }) {
   const ctx = useSalonContext();
@@ -26,7 +26,7 @@ export default function Confirm({
     setSubmitting(true);
     setError(null);
     try {
-      await createApi(ctx).createRequest(
+      const result = await createApi(ctx).createRequest(
         {
           menu_id: menu.id,
           staff_id: staff.id,
@@ -35,7 +35,7 @@ export default function Confirm({
         },
         idemKey,
       );
-      onSubmitted();
+      onSubmitted(result);
     } catch (e) {
       const err = e as { status?: number; body?: { error?: string } };
       if (err.status === 409 && err.body?.error === 'slot_conflict') {

@@ -322,3 +322,56 @@ describe('jstDayWindowUtc', () => {
     expect(jstDayWindowUtc('2026-11-09').startUtc).toBe('2026-11-08T15:00:00.000Z');
   });
 });
+
+describe('PayPal payment state for booking requests', () => {
+  test('409 prevents approval while payment is pending', async () => {
+    const db = scriptedDb([
+      [
+        'SELECT id, status, starts_at, payment_status FROM bookings',
+        {
+          first: {
+            id: 'b1',
+            status: 'requested',
+            starts_at: '2026-08-01T02:00:00.000Z',
+            payment_status: 'pending',
+          },
+        },
+      ],
+    ]);
+    const { app, env } = makeApp(db);
+    const res = await app.request(
+      '/api/booking/admin/requests/b1?account_id=acc1',
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approve' }),
+      },
+      env,
+      execCtx,
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'payment_required' });
+    expect(db.calls.some((c) => c.sql.includes('UPDATE bookings SET status'))).toBe(false);
+  });
+
+  test('marks a payable booking as paid', async () => {
+    const db = scriptedDb([
+      ['SET payment_status = ?', { run: { meta: { changes: 1 } } }],
+    ]);
+    const { app, env } = makeApp(db);
+    const res = await app.request(
+      '/api/booking/admin/requests/b1/payment?account_id=acc1',
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'paid' }),
+      },
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ payment_status: 'paid' });
+    const update = db.calls.find((c) => c.sql.includes('SET payment_status = ?'));
+    expect(update?.params[0]).toBe('paid');
+    expect(update?.params.slice(-2)).toEqual(['b1', 'acc1']);
+  });
+});

@@ -18,6 +18,8 @@ const EMPTY: Partial<BookingMenu> = {
   is_active: 1,
   auto_tag_id: null,
   create_zoom_meeting: 0,
+  paypal_payment_url: '',
+  require_paypal_first_booking: 0,
 }
 
 export default function MenusPage() {
@@ -158,6 +160,7 @@ export default function MenusPage() {
                     <td className="px-4 py-3 text-sm font-medium">
                       {m.name}
                       {m.create_zoom_meeting ? <span className="ml-2 rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-700">Zoom</span> : null}
+                      {m.require_paypal_first_booking ? <span className="ml-2 rounded bg-yellow-50 px-2 py-0.5 text-xs text-yellow-800">初回PayPal</span> : null}
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-600">
                       {m.category_label ? (
@@ -338,6 +341,16 @@ function Modal({
             予約確定時にZoomミーティングを自動発行する
           </label>
           <p className="-mt-2 text-xs text-gray-500">オンライン相談メニューだけで有効にしてください。参加URLはLINE確定通知とGoogleカレンダーへ自動挿入されます。</p>
+          <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-3 space-y-3">
+            <label className="flex items-center gap-2 text-sm font-medium text-yellow-900">
+              <input type="checkbox" checked={Boolean(form.require_paypal_first_booking)} onChange={(e) => set('require_paypal_first_booking', e.target.checked ? 1 : 0)} className="rounded" />
+              初回相談だけPayPal決済を必須にする
+            </label>
+            <Field label="PayPal決済URL">
+              <input type="url" value={form.paypal_payment_url ?? ''} onChange={(e) => set('paypal_payment_url', e.target.value)} className="w-full border border-yellow-300 rounded-lg px-3 py-2 text-sm" placeholder="https://www.paypal.com/..." />
+            </Field>
+            <p className="text-xs text-yellow-800">決済待ちの予約は、入金確認するまで承認できません。URLはPayPalの決済リンクを入力してください。</p>
+          </div>
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"

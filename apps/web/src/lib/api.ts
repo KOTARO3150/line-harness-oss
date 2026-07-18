@@ -1467,6 +1467,8 @@ export interface BookingMenu {
   is_active: number;
   auto_tag_id: string | null;
   create_zoom_meeting: number;
+  paypal_payment_url: string | null;
+  require_paypal_first_booking: number;
 }
 
 export interface BookingStaff {
@@ -1513,6 +1515,9 @@ export interface BookingRequest {
   zoom_meeting_id: string | null;
   zoom_join_url: string | null;
   zoom_start_url: string | null;
+  is_first_consultation: number;
+  payment_status: 'not_required' | 'pending' | 'paid' | 'refunded';
+  payment_confirmed_at: string | null;
 }
 
 function withAccount(path: string, accountId: string): string {
@@ -1618,6 +1623,11 @@ export const bookingApi = {
     fetchApi<{ status: string }>(
       withAccount(`/api/booking/admin/requests/${id}`, accountId),
       { method: 'PATCH', body: JSON.stringify({ action }) },
+    ),
+  updatePayment: (accountId: string, id: string, status: 'paid' | 'refunded') =>
+    fetchApi<{ payment_status: string }>(
+      withAccount(`/api/booking/admin/requests/${id}/payment`, accountId),
+      { method: 'PATCH', body: JSON.stringify({ status }) },
     ),
   pendingCount: (accountId: string) =>
     fetchApi<{ count: number }>(withAccount('/api/booking/admin/pending-count', accountId)),

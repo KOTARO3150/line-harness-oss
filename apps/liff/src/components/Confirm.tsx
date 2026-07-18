@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api, type MenuItem, type StaffItem } from '../lib/api.js';
+import { api, type BookingRequestResult, type MenuItem, type StaffItem } from '../lib/api.js';
 import { jstStartsAtIso } from '../lib/datetime.js';
 
 export default function Confirm({
@@ -12,7 +12,7 @@ export default function Confirm({
   menu: MenuItem;
   staff: StaffItem;
   slot: { date: string; start: string };
-  onSubmitted: () => void;
+  onSubmitted: (result: BookingRequestResult) => void;
   onBack: () => void;
 }) {
   const [note, setNote] = useState('');
@@ -24,7 +24,7 @@ export default function Confirm({
     setSubmitting(true);
     setError(null);
     try {
-      await api.createRequest(
+      const result = await api.createRequest(
         {
           menu_id: menu.id,
           staff_id: staff.id,
@@ -33,7 +33,7 @@ export default function Confirm({
         },
         idemKey,
       );
-      onSubmitted();
+      onSubmitted(result);
     } catch (e) {
       const err = e as { status?: number; body?: { error?: string } };
       if (err.status === 409 && err.body?.error === 'slot_conflict') {

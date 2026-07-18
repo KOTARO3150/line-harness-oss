@@ -5,7 +5,7 @@ import StaffList from '../components/StaffList.js';
 import DateTimePicker from '../components/DateTimePicker.js';
 import Confirm from '../components/Confirm.js';
 import Done from '../components/Done.js';
-import type { MenuItem, StaffItem } from '../lib/api.js';
+import type { BookingRequestResult, MenuItem, StaffItem } from '../lib/api.js';
 
 type Step = 'menu' | 'staff' | 'datetime' | 'confirm' | 'done';
 
@@ -18,6 +18,7 @@ export default function Booking() {
   const [menu, setMenu] = useState<MenuItem | null>(null);
   const [staff, setStaff] = useState<StaffItem | null>(null);
   const [slot, setSlot] = useState<{ date: string; start: string } | null>(null);
+  const [requestResult, setRequestResult] = useState<BookingRequestResult | null>(null);
 
   function exitPeekToBooking() {
     // peek モードを抜けて通常フローへ。同じ menu/staff/slot を持ち回したまま step を進める。
@@ -85,11 +86,14 @@ export default function Booking() {
           menu={menu}
           staff={staff}
           slot={slot}
-          onSubmitted={() => setStep('done')}
+          onSubmitted={(result) => {
+            setRequestResult(result);
+            setStep('done');
+          }}
           onBack={() => setStep('datetime')}
         />
       )}
-      {step === 'done' && <Done />}
+      {step === 'done' && <Done result={requestResult} />}
     </div>
   );
 }

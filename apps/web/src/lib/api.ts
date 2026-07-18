@@ -468,6 +468,14 @@ export const api = {
       fetchApi<ApiResponse<LineAccount[]>>('/api/line-accounts'),
     get: (id: string) =>
       fetchApi<ApiResponse<LineAccount>>(`/api/line-accounts/${id}`),
+    previewFollowerImport: (id: string) =>
+      fetchApi<ApiResponse<{ totalFollowers: number; alreadyImported: number; importable: number; conflicts: number }>>(
+        `/api/line-accounts/${id}/follower-import-preview`,
+      ),
+    importFollowers: (id: string) =>
+      fetchApi<ApiResponse<{ totalFollowers: number; created: number; alreadyImported: number; conflicts: number; profileFailures: number; remaining: number }>>(
+        `/api/line-accounts/${id}/follower-import`, { method: 'POST' },
+      ),
     create: (data: {
       channelId: string;
       name: string;

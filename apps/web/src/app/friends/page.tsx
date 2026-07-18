@@ -32,6 +32,7 @@ const PAGE_SIZE = 20
 
 type SortMode = 'recent' | 'oldest'
 type ResponseFilter = 'all' | 'unhandled'
+type ImportPreview = { totalFollowers: number; alreadyImported: number; importable: number; conflicts: number }
 
 export default function FriendsPage() {
   const { selectedAccountId } = useAccount()
@@ -47,6 +48,47 @@ export default function FriendsPage() {
   const [responseFilter, setResponseFilter] = useState<ResponseFilter>('all')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null)
+  const [importBusy, setImportBusy] = useState(false)
+  const [importMessage, setImportMessage] = useState('')
+
+  const previewImport = async () => {
+    if (!selectedAccountId) return
+    setImportBusy(true); setImportMessage('')
+    try {
+      const res = await api.lineAccounts.previewFollowerImport(selectedAccountId)
+      if (res.success) setImportPreview(res.data)
+      else setImportMessage(res.error)
+    } catch { setImportMessage('LINEから友だち一覧を取得できませんでした。') }
+    finally { setImportBusy(false) }
+  }
+
+  const runImport = async () => {
+    if (!selectedAccountId || !importPreview || importPreview.importable === 0) return
+    if (!window.confirm(`${importPreview.importable.toLocaleString('ja-JP')}人を顧客一覧へ登録します。よろしいですか？`)) return
+    setImportBusy(true); setImportMessage('')
+    try {
+      let created = 0
+      let remaining = importPreview.importable
+      while (remaining > 0) {
+        const res = await api.lineAccounts.importFollowers(selectedAccountId)
+        if (!res.success) { setImportMessage(res.error); return }
+        created += res.data.created
+        remaining = res.data.remaining
+        setImportMessage(`${created.toLocaleString('ja-JP')}人を登録中…（残り ${remaining.toLocaleString('ja-JP')}人）`)
+        if (res.data.created === 0 && remaining > 0) {
+          setImportMessage(`${created.toLocaleString('ja-JP')}人を登録しました。一部のプロフィールを取得できませんでした。`)
+          return
+        }
+      }
+      {
+        setImportMessage(`${created.toLocaleString('ja-JP')}人を登録しました。`)
+        setImportPreview(null)
+        await loadFriends()
+      }
+    } catch { setImportMessage('一括登録に失敗しました。もう一度お試しください。') }
+    finally { setImportBusy(false) }
+  }
 
   const loadTags = useCallback(async () => {
     try {
@@ -134,6 +176,28 @@ export default function FriendsPage() {
         title="友だちリスト"
         description="友だちの検索や、詳細情報の確認ができます。"
       />
+
+      <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="font-semibold text-gray-900">公式LINEの既存友だちを取り込む</h2>
+            <p className="text-sm text-gray-600 mt-1">認証済みアカウントの友だちを確認後、重複させずに登録します。過去の会話履歴は取り込みません。</p>
+          </div>
+          <button onClick={previewImport} disabled={!selectedAccountId || importBusy}
+            className="px-4 py-2 rounded-lg bg-white border border-green-600 text-green-700 text-sm font-medium disabled:opacity-50">
+            {importBusy ? '確認中…' : '人数を確認'}
+          </button>
+        </div>
+        {importPreview && <div className="mt-3 p-3 bg-white rounded-lg border border-green-100 text-sm">
+          <p>LINE上: <strong>{importPreview.totalFollowers.toLocaleString('ja-JP')}人</strong> ／ 登録済み: {importPreview.alreadyImported.toLocaleString('ja-JP')}人 ／ 新規登録対象: <strong>{importPreview.importable.toLocaleString('ja-JP')}人</strong></p>
+          {importPreview.conflicts > 0 && <p className="text-amber-700 mt-1">別アカウントとの重複 {importPreview.conflicts}人は安全のため除外します。</p>}
+          <button onClick={runImport} disabled={importBusy || importPreview.importable === 0}
+            className="mt-3 px-4 py-2 rounded-lg text-white text-sm font-medium disabled:opacity-50" style={{ backgroundColor: '#06C755' }}>
+            {importPreview.importable === 0 ? '新規対象はいません' : `${importPreview.importable.toLocaleString('ja-JP')}人を登録`}
+          </button>
+        </div>}
+        {importMessage && <p className="text-sm mt-2 text-gray-700">{importMessage}</p>}
+      </div>
 
       {/* Search + sort bar — L-step style */}
       <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">

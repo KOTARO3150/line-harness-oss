@@ -49,6 +49,38 @@ function serializeLineAccountFull(row: DbLineAccount) {
   };
 }
 
+async function getAllFollowerIds(client: LineClient): Promise<string[]> {
+  const ids = new Set<string>();
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+  do {
+    const page = await client.getFollowerIds(cursor);
+    for (const id of page.userIds ?? []) ids.add(id);
+    cursor = page.next;
+    if (cursor) {
+      if (seenCursors.has(cursor)) throw new Error('LINE API returned a repeated follower cursor');
+      seenCursors.add(cursor);
+    }
+  } while (cursor);
+  return [...ids];
+}
+
+async function currentFollowerMap(db: D1Database) {
+  const result = await db.prepare(
+    `SELECT line_user_id, line_account_id FROM friends`,
+  ).all<{ line_user_id: string; line_account_id: string | null }>();
+  return new Map((result.results ?? []).map((row) => [row.line_user_id, row.line_account_id]));
+}
+
+function followerApiError(c: any, err: unknown) {
+  const message = err instanceof Error ? err.message : String(err);
+  if (/LINE API error: 403/.test(message)) {
+    return c.json({ success: false, error: 'この機能はLINEの認証済みまたはプレミアムアカウントで利用できます。' }, 403);
+  }
+  console.error('LINE follower import error:', message);
+  return c.json({ success: false, error: 'LINEから友だち一覧を取得できませんでした。' }, 502);
+}
+
 // Fetch bot profile (displayName, pictureUrl) from LINE API
 async function fetchBotProfile(accessToken: string): Promise<{ displayName?: string; pictureUrl?: string; basicId?: string }> {
   try {
@@ -114,7 +146,7 @@ lineAccounts.get('/api/line-accounts', async (c) => {
 // GET /api/line-accounts/:id - get single (secrets only for owner/admin)
 lineAccounts.get('/api/line-accounts/:id', async (c) => {
   try {
-    const account = await getLineAccountById(c.env.DB, c.req.param('id'));
+    const account = await getLineAccountById(c.env.DB, c.req.param('id')!);
     if (!account) {
       return c.json({ success: false, error: 'LINE account not found' }, 404);
     }
@@ -137,7 +169,7 @@ lineAccounts.get('/api/line-accounts/:id/follower-insight', async (c) => {
       return c.json({ success: false, error: 'date query is required in yyyyMMdd format' }, 400);
     }
 
-    const account = await getLineAccountById(c.env.DB, c.req.param('id'));
+    const account = await getLineAccountById(c.env.DB, c.req.param('id')!);
     if (!account) {
       return c.json({ success: false, error: 'LINE account not found' }, 404);
     }
@@ -159,6 +191,75 @@ lineAccounts.get('/api/line-accounts/:id/follower-insight', async (c) => {
     const message = err instanceof Error ? err.message : String(err);
     console.error('GET /api/line-accounts/:id/follower-insight error:', message);
     return c.json({ success: false, error: 'Failed to fetch LINE follower insight' }, 502);
+  }
+});
+
+// Read-only preview. Fetches IDs but does not create or update customer records.
+lineAccounts.get('/api/line-accounts/:id/follower-import-preview', requireRole('owner', 'admin'), async (c) => {
+  try {
+    const account = await getLineAccountById(c.env.DB, c.req.param('id')!);
+    if (!account) return c.json({ success: false, error: 'LINE account not found' }, 404);
+    const ids = await getAllFollowerIds(new LineClient(account.channel_access_token));
+    const existing = await currentFollowerMap(c.env.DB);
+    let alreadyImported = 0;
+    let conflicts = 0;
+    for (const id of ids) {
+      if (!existing.has(id)) continue;
+      if (existing.get(id) === account.id) alreadyImported += 1;
+      else conflicts += 1;
+    }
+    return c.json({ success: true, data: {
+      totalFollowers: ids.length,
+      alreadyImported,
+      importable: ids.length - alreadyImported - conflicts,
+      conflicts,
+    } });
+  } catch (err) {
+    return followerApiError(c, err);
+  }
+});
+
+// Bulk import. Existing records are preserved; only unseen LINE user IDs are inserted.
+lineAccounts.post('/api/line-accounts/:id/follower-import', requireRole('owner'), async (c) => {
+  try {
+    const account = await getLineAccountById(c.env.DB, c.req.param('id')!);
+    if (!account) return c.json({ success: false, error: 'LINE account not found' }, 404);
+    const client = new LineClient(account.channel_access_token);
+    const ids = await getAllFollowerIds(client);
+    const existing = await currentFollowerMap(c.env.DB);
+    // Keep each Worker invocation below Cloudflare's external subrequest ceiling.
+    // The web UI repeats this endpoint until `remaining` reaches zero.
+    const allNewIds = ids.filter((id) => !existing.has(id));
+    const newIds = allNewIds.slice(0, 40);
+    let created = 0;
+    let profileFailures = 0;
+    for (let i = 0; i < newIds.length; i += 10) {
+      const profiles = await Promise.allSettled(newIds.slice(i, i + 10).map((id) => client.getProfile(id)));
+      const statements: D1PreparedStatement[] = [];
+      profiles.forEach((result, index) => {
+        if (result.status === 'rejected') { profileFailures += 1; return; }
+        const profile = result.value;
+        const now = new Date().toISOString();
+        statements.push(c.env.DB.prepare(
+          `INSERT OR IGNORE INTO friends
+           (id, line_user_id, display_name, picture_url, status_message, is_following, line_account_id, metadata, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+        ).bind(crypto.randomUUID(), profile.userId, profile.displayName ?? null, profile.pictureUrl ?? null,
+          profile.statusMessage ?? null, account.id, JSON.stringify({ importSource: 'line_verified_followers' }), now, now));
+      });
+      if (statements.length) {
+        const results = await c.env.DB.batch(statements);
+        created += results.reduce((sum, result) => sum + Number(result.meta?.changes ?? 0), 0);
+      }
+    }
+    const alreadyImported = ids.filter((id) => existing.get(id) === account.id).length;
+    const conflicts = ids.filter((id) => existing.has(id) && existing.get(id) !== account.id).length;
+    return c.json({ success: true, data: {
+      totalFollowers: ids.length, created, alreadyImported, conflicts, profileFailures,
+      remaining: Math.max(0, allNewIds.length - newIds.length),
+    } });
+  } catch (err) {
+    return followerApiError(c, err);
   }
 });
 

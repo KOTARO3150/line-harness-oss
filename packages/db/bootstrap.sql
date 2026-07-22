@@ -1048,3 +1048,14 @@ CREATE TABLE consultation_audit_logs (
   created_at TEXT NOT NULL
 );
 CREATE INDEX idx_consultation_audit_chart ON consultation_audit_logs (chart_id, created_at DESC);
+CREATE TABLE external_bookings (
+  id TEXT PRIMARY KEY, line_account_id TEXT NOT NULL, friend_id TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'proline', starts_at TEXT NOT NULL, ends_at TEXT,
+  status TEXT NOT NULL CHECK (status IN ('scheduled', 'cancelled', 'completed')),
+  menu_name TEXT, created_by_staff_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id),
+  FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE,
+  UNIQUE (line_account_id, friend_id, provider, starts_at)
+);
+CREATE INDEX idx_external_bookings_friend_starts ON external_bookings (friend_id, starts_at DESC);
+CREATE INDEX idx_external_bookings_account_status_starts ON external_bookings (line_account_id, status, starts_at);

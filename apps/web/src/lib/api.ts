@@ -1723,7 +1723,7 @@ export const consultationChartApi = {
       friend: { id: string; display_name: string | null; picture_url: string | null };
       chart: ConsultationChart | null;
       records: ConsultationRecord[];
-      bookings: Array<{ id: string; starts_at: string; status: string; menu_name: string }>;
+      bookings: Array<{ id: string; starts_at: string; status: string; menu_name: string | null; source: 'suzuki_os' | 'proline' | string }>;
       tags: Array<{ id: string; name: string; color: string }>;
       submissions: Array<{
         id: string;
@@ -1743,6 +1743,13 @@ export const consultationChartApi = {
     fetchApi<{ id: string }>(
       `/api/consultation-charts/${encodeURIComponent(friendId)}/records?account_id=${encodeURIComponent(accountId)}`,
       { method: 'POST', body: JSON.stringify(body) },
+    ),
+  importProlineBooking: (accountId: string, friendId: string, noticeText: string) =>
+    fetchApi<{
+      booking: { id: string; starts_at: string; ends_at: string | null; status: string; menu_name: string | null; source: string };
+    }>(
+      `/api/consultation-charts/${encodeURIComponent(friendId)}/external-bookings?account_id=${encodeURIComponent(accountId)}`,
+      { method: 'POST', body: JSON.stringify({ notice_text: noticeText }) },
     ),
   setFollowUpCompleted: (accountId: string, friendId: string, recordId: string, completed: boolean) =>
     fetchApi<{ completedAt: string | null }>(

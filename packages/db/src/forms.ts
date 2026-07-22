@@ -259,15 +259,22 @@ export async function deleteForm(db: D1Database, id: string): Promise<void> {
 export async function getFormSubmissions(
   db: D1Database,
   formId: string,
-): Promise<FormSubmission[]> {
+): Promise<Array<FormSubmission & { friend_name: string | null; friend_tags_json: string }>> {
   const result = await db
     .prepare(
-      `SELECT fs.*, f.display_name as friend_name FROM form_submissions fs
+      `SELECT fs.*, f.display_name as friend_name,
+         COALESCE((
+           SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color))
+           FROM friend_tags ft
+           JOIN tags t ON t.id = ft.tag_id
+           WHERE ft.friend_id = fs.friend_id
+         ), '[]') as friend_tags_json
+       FROM form_submissions fs
        LEFT JOIN friends f ON f.id = fs.friend_id
        WHERE fs.form_id = ? ORDER BY fs.created_at DESC`,
     )
     .bind(formId)
-    .all<FormSubmission & { friend_name: string | null }>();
+    .all<FormSubmission & { friend_name: string | null; friend_tags_json: string }>();
   return result.results;
 }
 

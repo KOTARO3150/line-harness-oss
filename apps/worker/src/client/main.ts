@@ -371,9 +371,11 @@ async function initSalonBooking(): Promise<void> {
   const iga = bookingParams.get('iga');
   const igan = bookingParams.get('igan');
 
-  // ② Silent UUID linking (fire-and-forget; booking API は id_token verify で
-  //    認証するので待つ必要はない)。
-  apiCall('/api/liff/link', {
+  // ② Booking submission resolves the caller through the `friends` row, so
+  //    wait for linking/import to finish before mounting the form. This also
+  //    imports customers who followed the official account before L Harness
+  //    started receiving webhooks.
+  const linkRes = await apiCall('/api/liff/link', {
     method: 'POST',
     body: JSON.stringify({
       idToken,
@@ -384,16 +386,13 @@ async function initSalonBooking(): Promise<void> {
       iga: iga || undefined,
       igan: igan || undefined,
     }),
-  })
-    .then(async (res) => {
-      if (res.ok) {
-        const data = (await res.json()) as { success: boolean; data?: { userId?: string } };
-        if (data?.data?.userId) saveUuid(data.data.userId);
-      }
-    })
-    .catch(() => {
-      /* silent */
-    });
+  });
+  if (!linkRes.ok) {
+    showError('公式LINEアカウントとお客様情報を連携できませんでした。友だち追加後にもう一度開いてください。');
+    return;
+  }
+  const linkData = (await linkRes.json()) as { success: boolean; data?: { userId?: string } };
+  if (linkData?.data?.userId) saveUuid(linkData.data.userId);
 
   // ③ Affiliate click 計測 (linkAndAddFlow と同等)。
   if (ref) {

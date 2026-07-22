@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import Link from 'next/link'
 import { parseStickerMessageContent, stickerFallback } from '@line-crm/shared'
 import { api, fetchApi } from '@/lib/api'
 import { UNANSWERED_REFRESH_EVENT } from '@/lib/events'
@@ -140,6 +141,14 @@ interface MessageLog {
   createdAt: string
 }
 
+interface ChatTemplate {
+  id: string
+  name: string
+  category: string
+  messageType: string
+  messageContent: string
+}
+
 function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
   friendId: string
   friend: FriendItem | null
@@ -238,6 +247,7 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
           <p className="text-sm font-bold text-gray-900">{friend?.displayName || '不明'}</p>
           <p className="text-xs text-gray-400">メッセージ履歴</p>
         </div>
+        <Link href={`/charts/detail?friend=${encodeURIComponent(friendId)}`} className="ml-auto rounded-lg border border-green-200 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-50">相談カルテ</Link>
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {loadingMessages ? (
@@ -327,6 +337,8 @@ export default function ChatsPage() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [error, setError] = useState('')
   const [messageContent, setMessageContent] = useState('')
+  const [chatTemplates, setChatTemplates] = useState<ChatTemplate[]>([])
+  const [templatesLoading, setTemplatesLoading] = useState(true)
   const [pendingImage, setPendingImage] = useState<ImageUploaderValue | null>(null)
   const [sending, setSending] = useState(false)
   const sendLockRef = useRef(false)
@@ -339,6 +351,35 @@ export default function ChatsPage() {
   const isComposingRef = useRef(false)
   const messagesScrollRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const loadTemplates = async () => {
+      setTemplatesLoading(true)
+      try {
+        const res = await api.templates.list()
+        if (!cancelled && res.success) {
+          setChatTemplates(
+            res.data
+              .filter((template) => template.messageType === 'text')
+              .map(({ id, name, category, messageType, messageContent }) => ({
+                id,
+                name,
+                category,
+                messageType,
+                messageContent,
+              })),
+          )
+        }
+      } catch {
+        // Chat sending must remain available even when template loading fails.
+      } finally {
+        if (!cancelled) setTemplatesLoading(false)
+      }
+    }
+    void loadTemplates()
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     try {
@@ -779,9 +820,9 @@ export default function ChatsPage() {
         </div>
       )}
 
-      <div className="flex gap-4 h-[calc(100vh-120px)] lg:h-[calc(100vh-180px)]">
+      <div className="flex min-w-0 gap-4 h-[calc(100vh-120px)] lg:h-[calc(100vh-180px)]">
         {/* Left Panel: Chat List */}
-        <div className={`w-full lg:w-96 lg:flex-shrink-0 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId ? 'hidden lg:flex' : 'flex'}`}>
+        <div className={`w-full lg:w-80 lg:flex-shrink-0 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId ? 'hidden lg:flex' : 'flex'}`}>
           {/* タブ (全て / 未読 / 対応中 / 解決済) は意図的に削除。直近メッセージが見やすい LINE 風一覧を優先。 */}
 
           {/* Filter row */}
@@ -908,7 +949,7 @@ export default function ChatsPage() {
         </div>
 
         {/* Right Panel: Chat Detail */}
-        <div className={`flex-1 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId || selectedFriendId ? 'flex' : 'hidden lg:flex'}`}>
+        <div className={`min-w-0 min-h-0 flex-1 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId || selectedFriendId ? 'flex' : 'hidden lg:flex'}`}>
           {selectedFriendId && !selectedChatId ? (
             /* Direct message to friend without existing chat */
             <DirectMessagePanel
@@ -1001,7 +1042,7 @@ export default function ChatsPage() {
               </div>
 
               {/* Messages — LINE-style chat bubbles */}
-              <div ref={messagesScrollRef} className="flex-1 overflow-y-auto p-4 space-y-2" style={{ backgroundColor: '#7494C0' }}>
+              <div ref={messagesScrollRef} className="min-h-[140px] flex-1 overflow-y-auto p-4 space-y-2" style={{ backgroundColor: '#7494C0' }}>
                 {(!chatDetail.messages || chatDetail.messages.length === 0) ? (
                   <div className="text-center py-8">
                     <p className="text-white/60 text-sm">メッセージはまだありません。</p>
@@ -1101,7 +1142,7 @@ export default function ChatsPage() {
               </div>
 
               {/* Send Message Form */}
-              <div className="px-4 py-3 border-t border-gray-200">
+              <div className="max-h-[48%] flex-shrink-0 overflow-y-auto px-4 py-3 border-t border-gray-200">
                 <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-gray-600">
                   <label className="inline-flex items-center gap-2 cursor-pointer select-none">
                     <input
@@ -1148,7 +1189,39 @@ export default function ChatsPage() {
                     value={pendingImage}
                     onChange={setPendingImage}
                     label="画像を送る (任意)"
+                    compact
                   />
+                </div>
+                <div className="mb-2 flex items-center gap-2">
+                  <label htmlFor="chat-template" className="text-xs font-medium text-gray-600 whitespace-nowrap">
+                    テンプレート
+                  </label>
+                  <select
+                    id="chat-template"
+                    value=""
+                    onChange={(e) => {
+                      const template = chatTemplates.find((item) => item.id === e.target.value)
+                      if (!template) return
+                      setMessageContent(template.messageContent)
+                      window.requestAnimationFrame(() => textareaRef.current?.focus())
+                    }}
+                    disabled={templatesLoading || chatTemplates.length === 0}
+                    className="min-w-0 flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white disabled:bg-gray-100 disabled:text-gray-400"
+                    aria-label="返信テンプレートを選択"
+                  >
+                    <option value="">
+                      {templatesLoading
+                        ? '読み込み中...'
+                        : chatTemplates.length === 0
+                          ? 'テキストテンプレートがありません'
+                          : 'テンプレートを選ぶ'}
+                    </option>
+                    {chatTemplates.map((template) => (
+                      <option key={template.id} value={template.id}>
+                        {template.category ? `[${template.category}] ` : ''}{template.name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div className="flex items-end gap-2">
                   <textarea
@@ -1198,7 +1271,7 @@ export default function ChatsPage() {
           直接渡せる (chat list SQL が `id: f.id` で friend_id を返す)。
         */}
         {(selectedChatId || selectedFriendId) && (
-          <div className="hidden xl:flex">
+          <div className="hidden w-72 flex-shrink-0 xl:flex">
             <FriendInfoSidebar
               friendId={selectedFriendId || selectedChatId}
               chatStatus={

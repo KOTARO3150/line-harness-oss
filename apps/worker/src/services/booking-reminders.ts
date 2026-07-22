@@ -15,6 +15,7 @@ interface DueRow {
   staff_name: string;
   channel_access_token: string;
   line_user_id: string;
+  zoom_join_url: string | null;
 }
 
 export interface ProcessRemindersParams {
@@ -39,7 +40,7 @@ export async function processDueReminders(
   const due = await db
     .prepare(
       `SELECT r.id, r.booking_id, r.kind, r.retry_count,
-              b.starts_at,
+              b.starts_at, b.zoom_join_url,
               m.name AS menu_name,
               s.display_name AS staff_name,
               la.channel_access_token,
@@ -73,6 +74,7 @@ export async function processDueReminders(
           staffName: row.staff_name,
           startsAtJst: startsAtJst(row.starts_at),
           hoursBefore: params.reminderHoursBefore,
+          joinUrl: row.zoom_join_url,
         },
       });
       await db

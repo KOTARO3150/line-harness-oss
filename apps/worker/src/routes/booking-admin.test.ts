@@ -212,6 +212,8 @@ describe('POST /api/booking/admin/bookings', () => {
     expect(body.status).toBe('confirmed');
     const insert = db.calls.find((c) => c.sql.includes('INSERT INTO bookings'));
     expect(insert?.params).toContain('confirmed');
+    const chart = db.calls.find((c) => c.sql.includes('INSERT INTO consultation_charts'));
+    expect(chart?.params).toContain(body.booking_id);
     // booking_reminders INSERT が走っている(未来の予約なので day_before + hours_before)
     const reminders = db.calls.filter((c) => c.sql.includes('INSERT INTO booking_reminders'));
     expect(reminders.length).toBeGreaterThan(0);
@@ -320,5 +322,58 @@ describe('jstDayWindowUtc', () => {
     const { jstDayWindowUtc } = await import('./booking.js');
     expect(jstDayWindowUtc('2026-09-10').startUtc).toBe('2026-09-09T15:00:00.000Z');
     expect(jstDayWindowUtc('2026-11-09').startUtc).toBe('2026-11-08T15:00:00.000Z');
+  });
+});
+
+describe('PayPal payment state for booking requests', () => {
+  test('409 prevents approval while payment is pending', async () => {
+    const db = scriptedDb([
+      [
+        'SELECT id, status, starts_at, payment_status FROM bookings',
+        {
+          first: {
+            id: 'b1',
+            status: 'requested',
+            starts_at: '2026-08-01T02:00:00.000Z',
+            payment_status: 'pending',
+          },
+        },
+      ],
+    ]);
+    const { app, env } = makeApp(db);
+    const res = await app.request(
+      '/api/booking/admin/requests/b1?account_id=acc1',
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approve' }),
+      },
+      env,
+      execCtx,
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'payment_required' });
+    expect(db.calls.some((c) => c.sql.includes('UPDATE bookings SET status'))).toBe(false);
+  });
+
+  test('marks a payable booking as paid', async () => {
+    const db = scriptedDb([
+      ['SET payment_status = ?', { run: { meta: { changes: 1 } } }],
+    ]);
+    const { app, env } = makeApp(db);
+    const res = await app.request(
+      '/api/booking/admin/requests/b1/payment?account_id=acc1',
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'paid' }),
+      },
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ payment_status: 'paid' });
+    const update = db.calls.find((c) => c.sql.includes('SET payment_status = ?'));
+    expect(update?.params[0]).toBe('paid');
+    expect(update?.params.slice(-2)).toEqual(['b1', 'acc1']);
   });
 });

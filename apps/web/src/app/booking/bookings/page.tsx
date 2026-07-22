@@ -121,6 +121,18 @@ export default function BookingsPage() {
     }
   }
 
+  async function handlePayment(id: string, status: 'paid' | 'refunded') {
+    if (!selectedAccountId) return
+    const label = status === 'paid' ? '入金確認済み' : '返金済み'
+    if (!confirm(`この予約を「${label}」にしますか？`)) return
+    try {
+      await bookingApi.updatePayment(selectedAccountId, id, status)
+      await load()
+    } catch (e) {
+      alert(`決済状態の更新に失敗しました: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
   return (
     <div>
       <Header
@@ -237,6 +249,7 @@ export default function BookingsPage() {
                       >
                         {b.friend_name ?? '-'}
                       </Link>
+                      <Link href={`/charts/detail?friend=${encodeURIComponent(b.friend_id)}`} className="ml-2 text-xs text-green-700 hover:underline">カルテ</Link>
                     </td>
                     <td className="px-4 py-3 text-sm">{b.menu_name}</td>
                     <td className="px-4 py-3 text-sm">{b.staff_name}</td>
@@ -248,9 +261,25 @@ export default function BookingsPage() {
                       <span className={`inline-block px-2 py-0.5 rounded text-xs ${statusBadgeColor[b.status] ?? 'bg-gray-100'}`}>
                         {statusLabel[b.status] ?? b.status}
                       </span>
+                      {b.external_event_id && (
+                        <span className="ml-1 inline-block rounded bg-blue-50 px-2 py-0.5 text-xs text-blue-700" title="Googleカレンダーへ登録済み">
+                          カレンダー同期済み
+                        </span>
+                      )}
+                      {b.is_first_consultation ? <span className="ml-1 inline-block rounded bg-purple-50 px-2 py-0.5 text-xs text-purple-700">初回</span> : null}
+                      {b.payment_status === 'pending' ? <span className="ml-1 inline-block rounded bg-yellow-100 px-2 py-0.5 text-xs text-yellow-800">PayPal決済待ち</span> : null}
+                      {b.payment_status === 'paid' ? <span className="ml-1 inline-block rounded bg-green-100 px-2 py-0.5 text-xs text-green-800">入金済み</span> : null}
+                      {b.payment_status === 'refunded' ? <span className="ml-1 inline-block rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-700">返金済み</span> : null}
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <ActionButtons status={b.status} onAction={(a) => handleDecide(b.id, a)} />
+                      {b.zoom_start_url && (
+                        <a href={b.zoom_start_url} target="_blank" rel="noreferrer" className="mr-2 inline-block rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700">
+                          Zoom開始
+                        </a>
+                      )}
+                      {b.payment_status === 'pending' && <button onClick={() => handlePayment(b.id, 'paid')} className="mr-2 rounded bg-yellow-500 px-3 py-1 text-xs font-medium text-white hover:bg-yellow-600">入金確認</button>}
+                      {b.payment_status === 'paid' && <button onClick={() => handlePayment(b.id, 'refunded')} className="mr-2 text-xs text-gray-500 hover:underline">返金済みにする</button>}
+                      <ActionButtons status={b.status} paymentPending={b.payment_status === 'pending'} onAction={(a) => handleDecide(b.id, a)} />
                     </td>
                   </tr>
                 ))}
@@ -265,9 +294,11 @@ export default function BookingsPage() {
 
 function ActionButtons({
   status,
+  paymentPending,
   onAction,
 }: {
   status: string
+  paymentPending: boolean
   onAction: (a: 'approve' | 'reject' | 'cancel' | 'no_show' | 'complete') => void
 }) {
   if (status === 'requested') {
@@ -275,7 +306,9 @@ function ActionButtons({
       <div className="inline-flex gap-1">
         <button
           onClick={() => onAction('approve')}
-          className="px-3 py-1 text-xs font-medium text-white rounded-md transition-opacity hover:opacity-90"
+          disabled={paymentPending}
+          title={paymentPending ? 'PayPal入金確認後に承認できます' : undefined}
+          className="px-3 py-1 text-xs font-medium text-white rounded-md transition-opacity hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
           style={{ backgroundColor: '#06C755' }}
         >
           承認

@@ -1,4 +1,5 @@
 'use client'
+import { useEffect } from 'react'
 import { usePathname } from 'next/navigation'
 import Sidebar from './layout/sidebar'
 import { UpdateBanner } from './update/update-banner'
@@ -7,6 +8,15 @@ import { AccountProvider } from '@/contexts/account-context'
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
+
+  useEffect(() => {
+    // Enables installation as 「鈴木薬舗OS」 on Mac/Windows. The worker does
+    // not cache authenticated customer data; every request still goes to the
+    // network so the installed app has the same security model as the web UI.
+    if ('serviceWorker' in navigator) {
+      void navigator.serviceWorker.register('/sw.js')
+    }
+  }, [])
 
   if (pathname === '/login') {
     return <>{children}</>

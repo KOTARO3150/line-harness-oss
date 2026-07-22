@@ -15,13 +15,24 @@ import { getLineAccounts } from '@line-crm/db';
 import type { Env } from '../index.js';
 import { canTransition, nextStatus, type BookingAction } from '../services/booking-state.js';
 import { computeSlots, getAvailability } from '../services/availability.js';
+import { isJapaneseHoliday, isSeasonalClosure } from '../services/japanese-business-calendar.js';
 import {
   findIdempotencyResponse,
   saveIdempotencyResponse,
 } from '../services/booking-idempotency.js';
 import { sendBookingNotification } from '../services/booking-notifier.js';
 import { insertConfirmationReminders } from '../services/booking-confirm.js';
+import {
+  removeBookingFromCalendar,
+  syncConfirmedBookingToCalendar,
+} from '../services/booking-calendar-sync.js';
+import {
+  ensureZoomMeetingForBooking,
+  removeZoomMeetingForBooking,
+  type ZoomConfig,
+} from '../services/booking-zoom-sync.js';
 import { attachTagAndFireSideEffects } from '../services/friend-tag-attach.js';
+import { ensureConsultationChartForConfirmedBooking } from '../services/consultation-chart-bootstrap.js';
 import {
   DEFAULT_ACCOUNT_SETTINGS,
   IDEMPOTENCY_TTL_MINUTES,
@@ -29,6 +40,15 @@ import {
 } from '../services/booking-types.js';
 
 const booking = new Hono<Env>();
+
+function zoomConfig(c: Context<Env>): ZoomConfig {
+  return {
+    accountId: c.env.ZOOM_ACCOUNT_ID,
+    clientId: c.env.ZOOM_CLIENT_ID,
+    clientSecret: c.env.ZOOM_CLIENT_SECRET,
+    userId: c.env.ZOOM_USER_ID,
+  };
+}
 
 // ----------------------------------------------------------------
 // Helpers
@@ -177,7 +197,7 @@ async function notifyForBooking(
 ): Promise<void> {
   const row = await db
     .prepare(
-      `SELECT b.starts_at,
+      `SELECT b.starts_at, b.zoom_join_url,
               m.name AS menu_name,
               s.display_name AS staff_name,
               la.channel_access_token,
@@ -196,6 +216,7 @@ async function notifyForBooking(
       staff_name: string;
       channel_access_token: string;
       line_user_id: string;
+      zoom_join_url: string | null;
     }>();
   if (!row) return;
   await sendBookingNotification({
@@ -207,6 +228,7 @@ async function notifyForBooking(
       staffName: row.staff_name,
       startsAtJst: startsAtJst(row.starts_at),
       hoursBefore: 0,
+      joinUrl: row.zoom_join_url,
     },
   });
 }
@@ -327,7 +349,7 @@ booking.post('/api/liff/booking/requests', async (c) => {
   const menuRow = await c.env.DB
     .prepare(
       `SELECT m.id, m.duration_minutes, m.buffer_after_minutes, m.base_price,
-              m.auto_tag_id,
+              m.auto_tag_id, m.paypal_payment_url, m.require_paypal_first_booking,
               COALESCE(sm.override_duration_minutes, m.duration_minutes) AS dur,
               COALESCE(sm.override_price, m.base_price) AS price,
               sm.is_offered
@@ -337,7 +359,7 @@ booking.post('/api/liff/booking/requests', async (c) => {
           AND m.deleted_at IS NULL AND m.is_active = 1`,
     )
     .bind(body.menu_id, body.staff_id, accountId)
-    .first<{ duration_minutes: number; buffer_after_minutes: number; auto_tag_id: string | null; dur: number; price: number; is_offered: number | null }>();
+    .first<{ duration_minutes: number; buffer_after_minutes: number; auto_tag_id: string | null; paypal_payment_url: string | null; require_paypal_first_booking: number; dur: number; price: number; is_offered: number | null }>();
   if (!menuRow || menuRow.is_offered !== 1) {
     return c.json({ error: 'menu_not_offered' }, 422);
   }
@@ -390,6 +412,12 @@ booking.post('/api/liff/booking/requests', async (c) => {
 
   const bookingId = crypto.randomUUID();
   const nowIso = new Date().toISOString();
+  const priorConsultation = await c.env.DB
+    .prepare(`SELECT 1 FROM bookings WHERE friend_id = ? AND line_account_id = ? AND status IN ('confirmed','completed','no_show') LIMIT 1`)
+    .bind(friendId, accountId)
+    .first();
+  const isFirstConsultation = !priorConsultation;
+  const paymentRequired = isFirstConsultation && menuRow.require_paypal_first_booking === 1;
   // 競合チェックと INSERT を 1 ステートメントで原子化する。
   // INSERT ... SELECT WHERE NOT EXISTS パターンで、同一スタッフの overlap 行がある場合は
   // 0 行 INSERT に落とす。changes=0 を 409 として扱う。
@@ -398,8 +426,8 @@ booking.post('/api/liff/booking/requests', async (c) => {
       `INSERT INTO bookings
         (id, line_account_id, friend_id, staff_id, menu_id,
          starts_at, ends_at, block_ends_at, status,
-         customer_note, price_at_booking, requested_at)
-       SELECT ?,?,?,?,?,?,?,?,?,?,?,?
+         customer_note, price_at_booking, requested_at, is_first_consultation, payment_status)
+       SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?
         WHERE NOT EXISTS (
           SELECT 1 FROM bookings
            WHERE staff_id = ?
@@ -421,6 +449,8 @@ booking.post('/api/liff/booking/requests', async (c) => {
       body.customer_note ?? null,
       menuRow.price,
       nowIso,
+      isFirstConsultation ? 1 : 0,
+      paymentRequired ? 'pending' : 'not_required',
       // NOT EXISTS subquery params
       body.staff_id,
       blockEndsAt.toISOString(),
@@ -461,7 +491,12 @@ booking.post('/api/liff/booking/requests', async (c) => {
     );
   }
 
-  const responseBody = { booking_id: bookingId, status: 'requested' };
+  const responseBody = {
+    booking_id: bookingId,
+    status: 'requested',
+    payment_status: paymentRequired ? 'pending' : 'not_required',
+    paypal_payment_url: paymentRequired ? menuRow.paypal_payment_url : null,
+  };
   await saveIdempotencyResponse(c.env.DB, {
     key: idemKey,
     lineAccountId: accountId,
@@ -533,7 +568,8 @@ booking.get('/api/booking/admin/menus', async (c) => {
     .prepare(
       `SELECT id, name, category_label, description,
               duration_minutes, buffer_after_minutes,
-              base_price, sort_order, is_active, auto_tag_id
+              base_price, sort_order, is_active, auto_tag_id, create_zoom_meeting,
+              paypal_payment_url, require_paypal_first_booking
          FROM menus
         WHERE line_account_id = ? AND deleted_at IS NULL
         ORDER BY sort_order ASC, id ASC`,
@@ -555,7 +591,13 @@ booking.post('/api/booking/admin/menus', async (c) => {
     base_price: number;
     sort_order?: number;
     auto_tag_id?: string | null;
+    create_zoom_meeting?: boolean;
+    paypal_payment_url?: string | null;
+    require_paypal_first_booking?: boolean;
   }>();
+  if (b.require_paypal_first_booking && !/^https:\/\//.test(b.paypal_payment_url?.trim() ?? '')) {
+    return c.json({ error: 'paypal_payment_url_required' }, 400);
+  }
   const autoTagId = (b.auto_tag_id ?? '').trim() === '' ? null : (b.auto_tag_id as string);
   if (autoTagId) {
     const tagExists = await c.env.DB
@@ -569,8 +611,9 @@ booking.post('/api/booking/admin/menus', async (c) => {
     .prepare(
       `INSERT INTO menus
         (id, line_account_id, name, category_label, description,
-         duration_minutes, buffer_after_minutes, base_price, sort_order, auto_tag_id)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+         duration_minutes, buffer_after_minutes, base_price, sort_order, auto_tag_id,
+         create_zoom_meeting, paypal_payment_url, require_paypal_first_booking)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
     .bind(
       id,
@@ -583,6 +626,9 @@ booking.post('/api/booking/admin/menus', async (c) => {
       b.base_price,
       b.sort_order ?? 0,
       autoTagId,
+      b.create_zoom_meeting ? 1 : 0,
+      b.paypal_payment_url?.trim() || null,
+      b.require_paypal_first_booking ? 1 : 0,
     )
     .run();
   return c.json({ id }, 201);
@@ -602,7 +648,13 @@ booking.put('/api/booking/admin/menus/:id', async (c) => {
     sort_order?: number;
     is_active?: boolean;
     auto_tag_id?: string | null;
+    create_zoom_meeting?: boolean;
+    paypal_payment_url?: string | null;
+    require_paypal_first_booking?: boolean;
   }>();
+  if (b.require_paypal_first_booking && !/^https:\/\//.test(b.paypal_payment_url?.trim() ?? '')) {
+    return c.json({ error: 'paypal_payment_url_required' }, 400);
+  }
   // PUT は古いクライアントが auto_tag_id フィールドを送らない場合がある。`undefined` を
   // null として書き込むと既存設定を消してしまうため、key 存在チェックで「明示的に送られた
   // ときだけ」更新する。
@@ -624,6 +676,8 @@ booking.put('/api/booking/admin/menus/:id', async (c) => {
             SET name = ?, category_label = ?, description = ?,
                 duration_minutes = ?, buffer_after_minutes = ?,
                 base_price = ?, sort_order = ?, is_active = ?, auto_tag_id = ?,
+                create_zoom_meeting = COALESCE(?, create_zoom_meeting),
+                paypal_payment_url = ?, require_paypal_first_booking = ?,
                 updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
           WHERE id = ? AND line_account_id = ?`,
       )
@@ -637,6 +691,9 @@ booking.put('/api/booking/admin/menus/:id', async (c) => {
         b.sort_order ?? 0,
         b.is_active === false ? 0 : 1,
         autoTagId,
+        b.create_zoom_meeting === undefined ? null : (b.create_zoom_meeting ? 1 : 0),
+        b.paypal_payment_url?.trim() || null,
+        b.require_paypal_first_booking ? 1 : 0,
         id,
         accountId,
       )
@@ -648,6 +705,8 @@ booking.put('/api/booking/admin/menus/:id', async (c) => {
             SET name = ?, category_label = ?, description = ?,
                 duration_minutes = ?, buffer_after_minutes = ?,
                 base_price = ?, sort_order = ?, is_active = ?,
+                create_zoom_meeting = COALESCE(?, create_zoom_meeting),
+                paypal_payment_url = ?, require_paypal_first_booking = ?,
                 updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
           WHERE id = ? AND line_account_id = ?`,
       )
@@ -660,6 +719,9 @@ booking.put('/api/booking/admin/menus/:id', async (c) => {
         b.base_price,
         b.sort_order ?? 0,
         b.is_active === false ? 0 : 1,
+        b.create_zoom_meeting === undefined ? null : (b.create_zoom_meeting ? 1 : 0),
+        b.paypal_payment_url?.trim() || null,
+        b.require_paypal_first_booking ? 1 : 0,
         id,
         accountId,
       )
@@ -869,16 +931,34 @@ booking.post('/api/booking/admin/bookings', async (c) => {
     return c.json({ error: 'slot_conflict' }, 409);
   }
 
+  // A confirmed booking should be visible in the consultation-chart workflow
+  // immediately. This only creates the empty customer/chart link; no health
+  // information or consultation record is inferred automatically.
+  await ensureConsultationChartForConfirmedBooking(c.env.DB, bookingId).catch((err) =>
+    console.error('consultation chart bootstrap (proxy-create) failed:', err),
+  );
+
   await insertConfirmationReminders(c.env.DB, {
     bookingId,
     startsAt,
     now: new Date(),
   });
-  c.executionCtx.waitUntil(
-    notifyForBooking(c.env.DB, bookingId, 'approved').catch((err) =>
-      console.error('booking notify (proxy-create) failed:', err),
-    ),
-  );
+  c.executionCtx.waitUntil((async () => {
+    // Zoom must be stored first so both Calendar and the LINE message can read
+    // and include the same customer join URL.
+    await ensureZoomMeetingForBooking(c.env.DB, bookingId, zoomConfig(c)).catch((err) =>
+      console.error('booking Zoom sync (proxy-create) failed:', err),
+    );
+    await Promise.all([
+      syncConfirmedBookingToCalendar(c.env.DB, bookingId, {
+        clientId: c.env.GOOGLE_CLIENT_ID,
+        clientSecret: c.env.GOOGLE_CLIENT_SECRET,
+      }).catch((err) => console.error('booking calendar sync (proxy-create) failed:', err)),
+      notifyForBooking(c.env.DB, bookingId, 'approved').catch((err) =>
+        console.error('booking notify (proxy-create) failed:', err),
+      ),
+    ]);
+  })());
   return c.json({ booking_id: bookingId, status: 'confirmed' }, 201);
 });
 
@@ -1139,6 +1219,8 @@ booking.post('/api/booking/admin/staff/:id/shifts/generate', async (c) => {
       'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat',
       { start: string; end: string } | null
     >;
+    exclude_japanese_holidays?: boolean;
+    exclude_seasonal_closures?: boolean;
   }>();
   if (!b.from_date || !b.weeks || !b.weekly_template) {
     return c.json({ error: 'missing_params' }, 400);
@@ -1151,6 +1233,9 @@ booking.post('/api/booking/admin/staff/:id/shifts/generate', async (c) => {
     d.setUTCDate(start.getUTCDate() + i);
     const tpl = b.weekly_template[dayKeys[d.getUTCDay()]];
     if (!tpl) continue;
+    const workDate = d.toISOString().slice(0, 10);
+    if (b.exclude_japanese_holidays && isJapaneseHoliday(workDate)) continue;
+    if (b.exclude_seasonal_closures && isSeasonalClosure(workDate)) continue;
     stmts.push(
       c.env.DB
         .prepare(
@@ -1158,7 +1243,7 @@ booking.post('/api/booking/admin/staff/:id/shifts/generate', async (c) => {
            VALUES (?, ?, ?, ?, ?)
            ON CONFLICT(staff_id, work_date) DO NOTHING`,
         )
-        .bind(crypto.randomUUID(), staffId, d.toISOString().slice(0, 10), tpl.start, tpl.end),
+        .bind(crypto.randomUUID(), staffId, workDate, tpl.start, tpl.end),
     );
   }
   if (stmts.length === 0) return c.json({ inserted: 0 });
@@ -1208,12 +1293,15 @@ booking.patch('/api/booking/admin/requests/:id', async (c) => {
   const id = c.req.param('id');
   const b = await c.req.json<{ action: BookingAction }>();
   const row = await c.env.DB
-    .prepare(`SELECT id, status, starts_at FROM bookings WHERE id = ? AND line_account_id = ?`)
+    .prepare(`SELECT id, status, starts_at, payment_status FROM bookings WHERE id = ? AND line_account_id = ?`)
     .bind(id, accountId)
-    .first<{ id: string; status: BookingStatus; starts_at: string }>();
+    .first<{ id: string; status: BookingStatus; starts_at: string; payment_status: string }>();
   if (!row) return c.json({ error: 'not_found' }, 404);
   if (!canTransition(row.status, b.action)) {
     return c.json({ error: 'invalid_transition' }, 409);
+  }
+  if (b.action === 'approve' && row.payment_status === 'pending') {
+    return c.json({ error: 'payment_required' }, 409);
   }
   const next = nextStatus(row.status, b.action);
   // 条件付き UPDATE: 同時 PATCH の race を防ぐ。changes=0 のときは別オペレータが先に
@@ -1231,17 +1319,42 @@ booking.patch('/api/booking/admin/requests/:id', async (c) => {
   }
 
   if (next === 'confirmed') {
+    await ensureConsultationChartForConfirmedBooking(c.env.DB, id).catch((err) =>
+      console.error('consultation chart bootstrap (confirmed) failed:', err),
+    );
     await insertConfirmationReminders(c.env.DB, {
       bookingId: id,
       startsAt: new Date(row.starts_at),
       now: new Date(),
     });
+    c.executionCtx.waitUntil((async () => {
+      await ensureZoomMeetingForBooking(c.env.DB, id, zoomConfig(c)).catch((err) =>
+        console.error('booking Zoom sync (confirmed) failed:', err),
+      );
+      await Promise.all([
+        syncConfirmedBookingToCalendar(c.env.DB, id, {
+          clientId: c.env.GOOGLE_CLIENT_ID,
+          clientSecret: c.env.GOOGLE_CLIENT_SECRET,
+        }).catch((err) => console.error('booking calendar sync (confirmed) failed:', err)),
+        notifyForBooking(c.env.DB, id, 'approved').catch((err) =>
+          console.error('booking notify (approved) failed:', err),
+        ),
+      ]);
+    })());
+  } else if (next === 'rejected') {
     c.executionCtx.waitUntil(
-      notifyForBooking(c.env.DB, id, 'approved').catch((err) =>
-        console.error('booking notify (approved) failed:', err),
+      removeBookingFromCalendar(c.env.DB, id, {
+        clientId: c.env.GOOGLE_CLIENT_ID,
+        clientSecret: c.env.GOOGLE_CLIENT_SECRET,
+      }).catch((err) =>
+        console.error('booking calendar sync (rejected) failed:', err),
       ),
     );
-  } else if (next === 'rejected') {
+    c.executionCtx.waitUntil(
+      removeZoomMeetingForBooking(c.env.DB, id, zoomConfig(c)).catch((err) =>
+        console.error('booking Zoom sync (rejected) failed:', err),
+      ),
+    );
     c.executionCtx.waitUntil(
       notifyForBooking(c.env.DB, id, 'rejected').catch((err) =>
         console.error('booking notify (rejected) failed:', err),
@@ -1254,9 +1367,40 @@ booking.patch('/api/booking/admin/requests/:id', async (c) => {
       )
       .bind(id)
       .run();
+    c.executionCtx.waitUntil(
+      removeBookingFromCalendar(c.env.DB, id, {
+        clientId: c.env.GOOGLE_CLIENT_ID,
+        clientSecret: c.env.GOOGLE_CLIENT_SECRET,
+      }).catch((err) =>
+        console.error('booking calendar sync (cancelled) failed:', err),
+      ),
+    );
+    c.executionCtx.waitUntil(
+      removeZoomMeetingForBooking(c.env.DB, id, zoomConfig(c)).catch((err) =>
+        console.error('booking Zoom sync (cancelled) failed:', err),
+      ),
+    );
   }
 
   return c.json({ status: next });
+});
+
+booking.patch('/api/booking/admin/requests/:id/payment', async (c) => {
+  const accountId = await resolveAccountIdAdmin(c);
+  if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
+  const id = c.req.param('id');
+  const body = await c.req.json<{ status: 'paid' | 'refunded' }>();
+  if (!['paid', 'refunded'].includes(body.status)) return c.json({ error: 'invalid_payment_status' }, 400);
+  const staff = c.get('staff');
+  const result = await c.env.DB
+    .prepare(`UPDATE bookings
+                 SET payment_status = ?, payment_confirmed_at = ?, payment_confirmed_by_staff_id = ?,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+               WHERE id = ? AND line_account_id = ? AND payment_status != 'not_required'`)
+    .bind(body.status, new Date().toISOString(), staff?.id ?? 'owner', id, accountId)
+    .run();
+  if ((result.meta?.changes ?? 0) === 0) return c.json({ error: 'not_found_or_not_required' }, 404);
+  return c.json({ payment_status: body.status });
 });
 
 // Pending count for sidebar badge.
@@ -1271,6 +1415,17 @@ booking.get('/api/booking/admin/pending-count', async (c) => {
     .bind(accountId)
     .first<{ cnt: number }>();
   return c.json({ count: row?.cnt ?? 0 });
+});
+
+booking.get('/api/booking/admin/zoom-status', async (c) => {
+  const accountId = await resolveAccountIdAdmin(c);
+  if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
+  return c.json({
+    configured: Boolean(
+      c.env.ZOOM_ACCOUNT_ID && c.env.ZOOM_CLIENT_ID && c.env.ZOOM_CLIENT_SECRET &&
+      c.env.ZOOM_USER_ID,
+    ),
+  });
 });
 
 export default booking;

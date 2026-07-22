@@ -32,6 +32,7 @@ interface Submission {
   formId: string
   friendId: string | null
   friendName?: string | null
+  friendTags?: Array<{ id: string; name: string; color: string }>
   data: Record<string, unknown>
   createdAt: string
 }
@@ -251,6 +252,7 @@ export default function FormSubmissionsPage() {
                     <tr>
                       <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase whitespace-nowrap">名前</th>
                       <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase whitespace-nowrap">日時</th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase whitespace-nowrap">現在のタグ</th>
                       {fieldKeys.slice(0, 4).map((key) => (
                         <th key={key} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase whitespace-nowrap">
                           {fieldLabels[key] || key}
@@ -270,6 +272,7 @@ export default function FormSubmissionsPage() {
                       >
                         <td className="px-4 py-3 text-sm font-medium text-gray-900 whitespace-nowrap">
                           {sub.friendId ? (
+                            <>
                             <Link
                               href={`/chats?friend=${encodeURIComponent(sub.friendId)}`}
                               onClick={(e) => e.stopPropagation()}
@@ -277,6 +280,8 @@ export default function FormSubmissionsPage() {
                             >
                               {sub.friendName || '不明'}
                             </Link>
+                            <Link href={`/charts/detail?friend=${encodeURIComponent(sub.friendId)}`} onClick={(e) => e.stopPropagation()} className="ml-2 text-xs text-green-700 hover:underline">カルテ</Link>
+                            </>
                           ) : (
                             <span>{sub.friendName || '不明'}</span>
                           )}
@@ -285,6 +290,15 @@ export default function FormSubmissionsPage() {
                           {new Date(sub.createdAt).toLocaleString('ja-JP', {
                             month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
                           })}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex max-w-[220px] flex-wrap gap-1">
+                            {(sub.friendTags ?? []).length > 0 ? (sub.friendTags ?? []).map((tag) => (
+                              <span key={tag.id} className="rounded-full px-2 py-0.5 text-[11px] font-medium" style={{ backgroundColor: `${tag.color}20`, color: tag.color }}>
+                                {tag.name}
+                              </span>
+                            )) : <span className="text-xs text-gray-400">タグなし</span>}
+                          </div>
                         </td>
                         {fieldKeys.slice(0, 4).map((key) => (
                           <td key={key} className="px-4 py-3 text-sm text-gray-700 max-w-[200px] truncate">
@@ -353,6 +367,7 @@ export default function FormSubmissionsPage() {
               <div>
                 <div className="text-[11px] text-gray-400 uppercase tracking-wide mb-1">回答者</div>
                 {detailSubmission.friendId ? (
+                  <>
                   <Link
                     href={`/chats?friend=${encodeURIComponent(detailSubmission.friendId)}`}
                     className="inline-flex items-center gap-2 text-sm text-[#06C755] hover:underline"
@@ -360,6 +375,8 @@ export default function FormSubmissionsPage() {
                     <span className="font-medium">{detailSubmission.friendName || '不明'}</span>
                     <span className="text-[11px] text-gray-400">→ チャットを開く</span>
                   </Link>
+                  <Link href={`/charts/detail?friend=${encodeURIComponent(detailSubmission.friendId)}`} className="ml-3 text-xs font-medium text-green-700 hover:underline">→ カルテを開く</Link>
+                  </>
                 ) : (
                   <span className="text-sm text-gray-700">{detailSubmission.friendName || '不明'}</span>
                 )}
@@ -368,6 +385,17 @@ export default function FormSubmissionsPage() {
               <div>
                 <div className="text-[11px] text-gray-400 uppercase tracking-wide mb-1">送信日時</div>
                 <div className="text-sm text-gray-700">{formatDateTime(detailSubmission.createdAt)}</div>
+              </div>
+
+              <div>
+                <div className="text-[11px] text-gray-400 uppercase tracking-wide mb-2">現在付いているタグ</div>
+                <div className="flex flex-wrap gap-2">
+                  {(detailSubmission.friendTags ?? []).length > 0 ? (detailSubmission.friendTags ?? []).map((tag) => (
+                    <span key={tag.id} className="rounded-full px-2.5 py-1 text-xs font-medium" style={{ backgroundColor: `${tag.color}20`, color: tag.color }}>
+                      {tag.name}
+                    </span>
+                  )) : <span className="text-sm text-gray-400">タグなし</span>}
+                </div>
               </div>
 
               <div>

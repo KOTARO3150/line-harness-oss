@@ -22,6 +22,13 @@ describe('renderNotificationText', () => {
     expect(text).toContain('予約が確定しました');
     expect(text).toContain('変更・キャンセルはお店に直接ご連絡ください');
   });
+  test('Zoom参加URLは承認通知とリマインダに入り、受付通知には入らない', () => {
+    const online = { ...ctx, joinUrl: 'https://zoom.us/j/123456789' };
+    expect(renderNotificationText('approved', online)).toContain(online.joinUrl);
+    expect(renderNotificationText('day_before', online)).toContain(online.joinUrl);
+    expect(renderNotificationText('hours_before', online)).toContain(online.joinUrl);
+    expect(renderNotificationText('requested', online)).not.toContain(online.joinUrl);
+  });
   test('拒否', () => {
     expect(renderNotificationText('rejected', ctx)).toContain('お取りできませんでした');
   });

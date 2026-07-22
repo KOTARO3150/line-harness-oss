@@ -14,6 +14,8 @@ export interface ImageUploaderProps {
   value: ImageUploaderValue | null
   onChange: (next: ImageUploaderValue | null) => void
   label?: string
+  /** Dense form layout (for example the operator chat composer). */
+  compact?: boolean
 }
 
 /**
@@ -23,7 +25,7 @@ export interface ImageUploaderProps {
  * mode='line-image' は {originalContentUrl, previewImageUrl} を返す (Broadcast / Auto-reply / Template / Chats)。
  * 初版は preview = original の同 URL。後段で本格 resize が必要になれば worker 側で対応。
  */
-export default function ImageUploader({ mode, value, onChange, label }: ImageUploaderProps) {
+export default function ImageUploader({ mode, value, onChange, label, compact = false }: ImageUploaderProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -103,8 +105,8 @@ export default function ImageUploader({ mode, value, onChange, label }: ImageUpl
         : value.previewImageUrl
 
   return (
-    <div className="space-y-2">
-      {label && <div className="text-sm font-medium text-gray-700">{label}</div>}
+    <div className={compact ? 'space-y-1' : 'space-y-2'}>
+      {label && <div className={`${compact ? 'text-xs' : 'text-sm'} font-medium text-gray-700`}>{label}</div>}
       <div className="flex justify-end">
         <button
           type="button"
@@ -145,7 +147,7 @@ export default function ImageUploader({ mode, value, onChange, label }: ImageUpl
           onDrop={onDrop}
           onPaste={onPaste}
           tabIndex={0}
-          className="rounded-lg border-2 border-dashed border-gray-300 bg-white p-4 transition-colors hover:border-gray-400 focus:border-emerald-500 focus:outline-none"
+          className={`rounded-lg border-2 border-dashed border-gray-300 bg-white transition-colors hover:border-gray-400 focus:border-emerald-500 focus:outline-none ${compact ? 'px-3 py-2' : 'p-4'}`}
         >
           {previewUrl ? (
             <div className="flex items-center gap-3">
@@ -169,7 +171,7 @@ export default function ImageUploader({ mode, value, onChange, label }: ImageUpl
               </div>
             </div>
           ) : (
-            <div className="flex flex-col items-center gap-2 py-4 text-sm text-gray-500">
+            <div className={`flex items-center justify-center text-sm text-gray-500 ${compact ? 'flex-row gap-3 py-1' : 'flex-col gap-2 py-4'}`}>
               <button
                 type="button"
                 onClick={() => inputRef.current?.click()}
@@ -178,7 +180,7 @@ export default function ImageUploader({ mode, value, onChange, label }: ImageUpl
               >
                 {busy ? 'アップロード中…' : '📎 画像を選択'}
               </button>
-              <div className="text-xs text-gray-400">またはドラッグ&ドロップ / Cmd+V でペースト</div>
+              <div className="text-xs text-gray-400">{compact ? 'D&D / Cmd+V' : 'またはドラッグ&ドロップ / Cmd+V でペースト'}</div>
             </div>
           )}
           <input

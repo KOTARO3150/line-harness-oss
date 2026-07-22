@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { api } from '@/lib/api'
+import { api, consultationChartApi } from '@/lib/api'
 import CcPromptButton from '@/components/cc-prompt-button'
 import { useAccount } from '@/contexts/account-context'
 
@@ -33,6 +33,8 @@ interface DashboardStats {
   automationCount: number | null
   scoringRuleCount: number | null
 }
+
+type TodayData = Awaited<ReturnType<typeof consultationChartApi.today>>
 
 interface StatCardProps {
   title: string
@@ -71,6 +73,78 @@ function StatCard({ title, value, loading, icon, href, accentColor = '#06C755' }
   )
 }
 
+function TodayWorklist({ data, loading }: { data: TodayData | null; loading: boolean }) {
+  if (loading) return <div className="mb-6 h-44 animate-pulse rounded-xl border border-gray-200 bg-white" />
+  if (!data) return null
+  const total = data.counts.bookings + data.counts.submissions + data.counts.warnings + data.counts.followUps + data.counts.unanswered
+  const sections = [
+    {
+      key: 'bookings', title: '本日の予約', count: data.counts.bookings, color: 'green', href: '/booking/bookings',
+      rows: data.bookings.map((item) => ({
+        id: item.id, href: `/charts/detail?friend=${encodeURIComponent(item.friend_id)}`,
+        title: `${new Date(item.starts_at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}　${item.friend_name || '名前未設定'}`,
+        detail: `${item.menu_name} · ${item.staff_name}${item.status === 'requested' ? ' · 承認待ち' : ''}`,
+      })),
+    },
+    {
+      key: 'submissions', title: '未取り込み問診', count: data.counts.submissions, color: 'blue', href: '/form-submissions',
+      rows: data.submissions.map((item) => ({
+        id: item.id, href: `/charts/detail?friend=${encodeURIComponent(item.friend_id)}`,
+        title: item.friend_name || '名前未設定', detail: `${item.form_name} · ${new Date(item.created_at).toLocaleString('ja-JP')}`,
+      })),
+    },
+    {
+      key: 'warnings', title: '要確認カルテ', count: data.counts.warnings, color: 'amber', href: '/charts',
+      rows: data.warnings.map((item) => ({
+        id: item.friend_id, href: `/charts/detail?friend=${encodeURIComponent(item.friend_id)}`,
+        title: item.customer_name || '名前未設定',
+        detail: [item.has_safety_notes ? '注意事項' : '', item.has_allergies ? 'アレルギー' : '', item.has_medications ? '服薬・使用中' : ''].filter(Boolean).join(' · '),
+      })),
+    },
+    {
+      key: 'followUps', title: '期限が来たフォロー', count: data.counts.followUps, color: 'purple', href: '/charts',
+      rows: data.followUps.map((item) => ({
+        id: item.id, href: `/charts/detail?friend=${encodeURIComponent(item.friend_id)}`,
+        title: item.customer_name || '名前未設定',
+        detail: `${item.follow_up_due_date < data.date ? '期限超過' : '本日期限'} · ${item.follow_up_plan || 'フォロー内容未記入'}`,
+      })),
+    },
+    {
+      key: 'unanswered', title: '未返信LINE', count: data.counts.unanswered, color: 'red', href: '/notifications',
+      rows: data.unanswered.map((item) => ({
+        id: item.friendId, href: `/chats?friend=${encodeURIComponent(item.friendId)}`,
+        title: item.displayName || '名前未設定',
+        detail: `${item.lastIncomingContent.slice(0, 50)} · ${new Date(item.lastIncomingAt).toLocaleString('ja-JP')}`,
+      })),
+    },
+  ]
+  const colors: Record<string, string> = {
+    green: 'border-green-200 bg-green-50 text-green-800', blue: 'border-blue-200 bg-blue-50 text-blue-800',
+    amber: 'border-amber-200 bg-amber-50 text-amber-900', red: 'border-red-200 bg-red-50 text-red-800',
+    purple: 'border-purple-200 bg-purple-50 text-purple-800',
+  }
+  return (
+    <section className="mb-6 rounded-xl border border-gray-200 bg-white p-4 sm:p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div><h2 className="text-lg font-bold text-gray-900">今日対応するお客様</h2><p className="mt-0.5 text-xs text-gray-500">予約・問診・安全確認・LINE返信をここから始めます</p></div>
+        <span className={`rounded-full px-3 py-1 text-sm font-semibold ${total > 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>{total > 0 ? `確認 ${total}件` : '対応事項なし'}</span>
+      </div>
+      <div className="mt-4 grid gap-3 xl:grid-cols-2">
+        {sections.map((section) => (
+          <div key={section.key} className={`rounded-xl border p-3 ${colors[section.color]}`}>
+            <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">{section.title} <span className="ml-1">{section.count}件</span></h3><Link href={section.href} className="text-xs underline underline-offset-2">一覧へ</Link></div>
+            <div className="mt-2 space-y-1.5">
+              {section.rows.slice(0, 5).map((row) => <Link key={row.id} href={row.href} className="block rounded-lg bg-white/90 p-2.5 hover:bg-white"><div className="text-sm font-medium text-gray-900">{row.title}</div><div className="mt-0.5 truncate text-xs text-gray-500">{row.detail}</div></Link>)}
+              {section.rows.length === 0 && <div className="rounded-lg bg-white/60 p-3 text-center text-xs opacity-70">該当なし</div>}
+              {section.rows.length > 5 && <Link href={section.href} className="block pt-1 text-center text-xs font-medium">ほか {section.rows.length - 5}件を見る</Link>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 export default function DashboardPage() {
   const { selectedAccountId, selectedAccount } = useAccount()
   const [stats, setStats] = useState<DashboardStats>({
@@ -83,6 +157,8 @@ export default function DashboardPage() {
   })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [today, setToday] = useState<TodayData | null>(null)
+  const [todayLoading, setTodayLoading] = useState(true)
 
   useEffect(() => {
     const load = async () => {
@@ -134,6 +210,15 @@ export default function DashboardPage() {
     load()
   }, [selectedAccountId])
 
+  useEffect(() => {
+    if (!selectedAccountId) { setToday(null); setTodayLoading(false); return }
+    setTodayLoading(true)
+    void consultationChartApi.today(selectedAccountId)
+      .then(setToday)
+      .catch(() => setToday(null))
+      .finally(() => setTodayLoading(false))
+  }, [selectedAccountId])
+
   return (
     <div>
       <div className="mb-6">
@@ -150,6 +235,8 @@ export default function DashboardPage() {
           {error}
         </div>
       )}
+
+      <TodayWorklist data={today} loading={todayLoading} />
 
       {/* Demo banner */}
       <a

@@ -32,6 +32,7 @@ import {
   type ZoomConfig,
 } from '../services/booking-zoom-sync.js';
 import { attachTagAndFireSideEffects } from '../services/friend-tag-attach.js';
+import { ensureConsultationChartForConfirmedBooking } from '../services/consultation-chart-bootstrap.js';
 import {
   DEFAULT_ACCOUNT_SETTINGS,
   IDEMPOTENCY_TTL_MINUTES,
@@ -930,6 +931,13 @@ booking.post('/api/booking/admin/bookings', async (c) => {
     return c.json({ error: 'slot_conflict' }, 409);
   }
 
+  // A confirmed booking should be visible in the consultation-chart workflow
+  // immediately. This only creates the empty customer/chart link; no health
+  // information or consultation record is inferred automatically.
+  await ensureConsultationChartForConfirmedBooking(c.env.DB, bookingId).catch((err) =>
+    console.error('consultation chart bootstrap (proxy-create) failed:', err),
+  );
+
   await insertConfirmationReminders(c.env.DB, {
     bookingId,
     startsAt,
@@ -1311,6 +1319,9 @@ booking.patch('/api/booking/admin/requests/:id', async (c) => {
   }
 
   if (next === 'confirmed') {
+    await ensureConsultationChartForConfirmedBooking(c.env.DB, id).catch((err) =>
+      console.error('consultation chart bootstrap (confirmed) failed:', err),
+    );
     await insertConfirmationReminders(c.env.DB, {
       bookingId: id,
       startsAt: new Date(row.starts_at),

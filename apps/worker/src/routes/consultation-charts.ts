@@ -3,6 +3,7 @@ import type { Env } from '../index.js';
 import { computeUnansweredInbox } from '../services/unanswered-inbox.js';
 import { matchingConditionalTagIds } from '../services/form-field-rules.js';
 import { jstDayBounds } from '../services/jst-day.js';
+import { parseProlineBookingNotice } from '../services/proline-booking-import.js';
 
 const consultationCharts = new Hono<Env>();
 
@@ -220,12 +221,22 @@ consultationCharts.get('/api/consultation-charts/:friendId', async (c) => {
   const records = chart ? await c.env.DB.prepare(
     `SELECT * FROM consultation_records WHERE chart_id = ? ORDER BY consultation_at DESC, created_at DESC`,
   ).bind(chart.id).all() : { results: [] };
-  const bookings = await c.env.DB.prepare(
+  const internalBookings = await c.env.DB.prepare(
     `SELECT b.id, b.starts_at, b.status, m.name AS menu_name
        FROM bookings b INNER JOIN menus m ON m.id = b.menu_id
       WHERE b.friend_id = ? AND b.line_account_id = ?
       ORDER BY b.starts_at DESC LIMIT 20`,
-  ).bind(friendId, accountId).all();
+  ).bind(friendId, accountId).all<{
+    id: string; starts_at: string; status: string; menu_name: string;
+  }>();
+  const externalBookings = await c.env.DB.prepare(
+    `SELECT id, starts_at, status, menu_name, provider AS source
+       FROM external_bookings
+      WHERE friend_id = ? AND line_account_id = ?
+      ORDER BY starts_at DESC LIMIT 20`,
+  ).bind(friendId, accountId).all<{
+    id: string; starts_at: string; status: string; menu_name: string | null; source: string;
+  }>();
   const submissions = await c.env.DB.prepare(
     `SELECT fs.id, fs.created_at, fs.data, fm.name AS form_name, fm.fields,
             CASE WHEN cr.id IS NULL THEN 0 ELSE 1 END AS imported
@@ -246,8 +257,12 @@ consultationCharts.get('/api/consultation-charts/:friendId', async (c) => {
     accountId, chartId: (chart?.id as string | undefined) ?? null, friendId,
     staffId: c.get('staff').id, action: 'view',
   });
+  const bookings = [
+    ...internalBookings.results.map((booking) => ({ ...booking, source: 'suzuki_os' })),
+    ...externalBookings.results,
+  ].sort((left, right) => String(right.starts_at).localeCompare(String(left.starts_at))).slice(0, 40);
   return c.json({
-    friend, chart, records: records.results, bookings: bookings.results,
+    friend, chart, records: records.results, bookings,
     tags: tags.results,
     submissions: submissions.results.map((submission) => ({
       id: submission.id,
@@ -258,6 +273,66 @@ consultationCharts.get('/api/consultation-charts/:friendId', async (c) => {
       fields: JSON.parse(submission.fields || '[]') as Array<{ name: string; label: string; chartTarget?: string }>,
     })),
   });
+});
+
+consultationCharts.post('/api/consultation-charts/:friendId/external-bookings', async (c) => {
+  const accountId = c.req.query('account_id');
+  if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
+  const friendId = c.req.param('friendId');
+  if (!(await friendInAccount(c.env.DB, friendId, accountId))) {
+    return c.json({ error: 'friend_not_found' }, 404);
+  }
+  const body = await c.req.json<{ notice_text?: unknown }>().catch(() => null);
+  if (!body || typeof body.notice_text !== 'string' || !body.notice_text.trim()) {
+    return c.json({ error: 'missing_notice_text' }, 400);
+  }
+  if (body.notice_text.length > 12_000) return c.json({ error: 'notice_text_too_long' }, 413);
+  const parsed = parseProlineBookingNotice(body.notice_text);
+  if (!parsed) return c.json({ error: 'unrecognized_proline_booking_notice' }, 422);
+
+  const now = new Date().toISOString();
+  const proposedChartId = crypto.randomUUID();
+  await c.env.DB.prepare(
+    `INSERT INTO consultation_charts (id, line_account_id, friend_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(friend_id) DO NOTHING`,
+  ).bind(proposedChartId, accountId, friendId, now, now).run();
+  const chart = await c.env.DB.prepare(
+    `SELECT id FROM consultation_charts WHERE friend_id = ? AND line_account_id = ?`,
+  ).bind(friendId, accountId).first<{ id: string }>();
+  if (!chart) return c.json({ error: 'chart_not_created' }, 500);
+  const chartId = chart.id;
+  await c.env.DB.prepare(`UPDATE consultation_charts SET updated_at = ? WHERE id = ?`)
+    .bind(now, chartId).run();
+
+  const proposedId = crypto.randomUUID();
+  await c.env.DB.prepare(
+    `INSERT INTO external_bookings
+      (id, line_account_id, friend_id, provider, starts_at, ends_at, status, menu_name,
+       created_by_staff_id, created_at, updated_at)
+     VALUES (?, ?, ?, 'proline', ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(line_account_id, friend_id, provider, starts_at) DO UPDATE SET
+       ends_at = COALESCE(excluded.ends_at, external_bookings.ends_at),
+       status = excluded.status,
+       menu_name = COALESCE(excluded.menu_name, external_bookings.menu_name),
+       updated_at = excluded.updated_at`,
+  ).bind(
+    proposedId, accountId, friendId, parsed.startsAt, parsed.endsAt, parsed.status,
+    parsed.menuName, c.get('staff').id, now, now,
+  ).run();
+  const booking = await c.env.DB.prepare(
+    `SELECT id, starts_at, ends_at, status, menu_name, provider AS source
+       FROM external_bookings
+      WHERE line_account_id = ? AND friend_id = ? AND provider = 'proline' AND starts_at = ?`,
+  ).bind(accountId, friendId, parsed.startsAt).first<{
+    id: string; starts_at: string; ends_at: string | null; status: string;
+    menu_name: string | null; source: string;
+  }>();
+  await audit(c.env.DB, {
+    accountId, chartId, friendId, staffId: c.get('staff').id,
+    action: parsed.status === 'cancelled' ? 'import_proline_booking_cancelled' : 'import_proline_booking_scheduled',
+  });
+  return c.json({ booking });
 });
 
 consultationCharts.put('/api/consultation-charts/:friendId', async (c) => {

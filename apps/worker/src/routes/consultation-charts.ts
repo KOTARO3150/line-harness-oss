@@ -275,6 +275,46 @@ consultationCharts.get('/api/consultation-charts/:friendId', async (c) => {
   });
 });
 
+consultationCharts.post('/api/consultation-charts/:friendId/external-bookings/preview', async (c) => {
+  const accountId = c.req.query('account_id');
+  if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
+  const friendId = c.req.param('friendId');
+  if (!(await friendInAccount(c.env.DB, friendId, accountId))) {
+    return c.json({ error: 'friend_not_found' }, 404);
+  }
+  const body = await c.req.json<{ notice_text?: unknown }>().catch(() => null);
+  if (!body || typeof body.notice_text !== 'string' || !body.notice_text.trim()) {
+    return c.json({ error: 'missing_notice_text' }, 400);
+  }
+  if (body.notice_text.length > 12_000) return c.json({ error: 'notice_text_too_long' }, 413);
+  const parsed = parseProlineBookingNotice(body.notice_text);
+  if (!parsed) return c.json({ error: 'unrecognized_proline_booking_notice' }, 422);
+
+  const existingProlineBooking = await c.env.DB.prepare(
+    `SELECT id, status FROM external_bookings
+      WHERE line_account_id = ? AND friend_id = ? AND provider = 'proline' AND starts_at = ?
+      LIMIT 1`,
+  ).bind(accountId, friendId, parsed.startsAt).first<{ id: string; status: string }>();
+  const sameTimeSuzukiBooking = await c.env.DB.prepare(
+    `SELECT id, status FROM bookings
+      WHERE line_account_id = ? AND friend_id = ? AND starts_at = ?
+        AND status NOT IN ('cancelled', 'rejected')
+      LIMIT 1`,
+  ).bind(accountId, friendId, parsed.startsAt).first<{ id: string; status: string }>();
+
+  return c.json({
+    preview: {
+      starts_at: parsed.startsAt,
+      ends_at: parsed.endsAt,
+      status: parsed.status,
+      menu_name: parsed.menuName,
+      source: 'proline' as const,
+      already_imported: Boolean(existingProlineBooking),
+      same_time_suzuki_booking: Boolean(sameTimeSuzukiBooking),
+    },
+  });
+});
+
 consultationCharts.post('/api/consultation-charts/:friendId/external-bookings', async (c) => {
   const accountId = c.req.query('account_id');
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);

@@ -12,6 +12,7 @@ import {
 import { useAccount } from '@/contexts/account-context'
 
 type Detail = Awaited<ReturnType<typeof consultationChartApi.get>>
+type ProlinePreview = Awaited<ReturnType<typeof consultationChartApi.previewProlineBooking>>['preview']
 
 const EMPTY_CHART: Partial<ConsultationChart> = {
   customer_name: '', customer_name_kana: '', birth_date: '', phone: '',
@@ -116,6 +117,7 @@ export default function ChartDetailPage() {
   const [chatImportConfirmed, setChatImportConfirmed] = useState(false)
   const [showProlineImport, setShowProlineImport] = useState(false)
   const [prolineNoticeText, setProlineNoticeText] = useState('')
+  const [prolinePreview, setProlinePreview] = useState<ProlinePreview | null>(null)
   const [prolineImportConfirmed, setProlineImportConfirmed] = useState(false)
   const [chartSuggestions, setChartSuggestions] = useState<ChartSuggestion[]>([])
   const [sendRecord, setSendRecord] = useState<ConsultationRecord | null>(null)
@@ -173,8 +175,26 @@ export default function ChartDetailPage() {
     } finally { setSaving(false) }
   }
 
+  const previewProlineBooking = async () => {
+    if (!selectedAccountId || !prolineNoticeText.trim()) return
+    setSaving(true); setError(''); setSaved('')
+    try {
+      const result = await consultationChartApi.previewProlineBooking(
+        selectedAccountId, friendId, prolineNoticeText.trim(),
+      )
+      setProlinePreview(result.preview)
+      setProlineImportConfirmed(false)
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : ''
+      setProlinePreview(null)
+      setError(message.includes('422')
+        ? '予約日時を読み取れませんでした。プロラインの予約受付通知またはキャンセル通知を、全文貼り付けてください。'
+        : 'プロライン予約の内容を読み取れませんでした。通知内容を確認してください。')
+    } finally { setSaving(false) }
+  }
+
   const importProlineBooking = async () => {
-    if (!selectedAccountId || !prolineImportConfirmed || !prolineNoticeText.trim()) return
+    if (!selectedAccountId || !prolinePreview || !prolineImportConfirmed || !prolineNoticeText.trim()) return
     setSaving(true); setError(''); setSaved('')
     try {
       const result = await consultationChartApi.importProlineBooking(
@@ -182,6 +202,7 @@ export default function ChartDetailPage() {
       )
       const cancelled = result.booking.status === 'cancelled'
       setProlineNoticeText('')
+      setProlinePreview(null)
       setProlineImportConfirmed(false)
       setShowProlineImport(false)
       setSaved(cancelled ? 'プロラインのキャンセル通知を予約履歴へ反映しました。' : 'プロライン予約を予約履歴へ取り込みました。')
@@ -400,20 +421,51 @@ export default function ChartDetailPage() {
       <section className="mt-6 rounded-xl border border-gray-200 bg-white p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="font-semibold text-gray-900">予約履歴</h2>
-          <button type="button" onClick={() => { setShowProlineImport(!showProlineImport); setProlineImportConfirmed(false) }} className="rounded-lg border border-cyan-300 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-800">プロライン予約を取り込む</button>
+          <button type="button" onClick={() => { setShowProlineImport(!showProlineImport); setProlinePreview(null); setProlineImportConfirmed(false) }} className="rounded-lg border border-cyan-300 bg-cyan-50 px-4 py-2 text-sm font-semibold text-cyan-800">プロライン予約を取り込む</button>
         </div>
         {showProlineImport && (
           <div className="mt-4 rounded-xl border border-cyan-200 bg-cyan-50 p-4">
-            <h3 className="text-sm font-semibold text-cyan-950">プロラインの予約通知を貼り付け</h3>
-            <p className="mt-1 text-xs leading-5 text-cyan-900">予約受付またはキャンセルの通知文を、そのまま貼り付けてください。保存するのは日時・相談メニュー・予約状態だけです。LINE送信やプロライン側の変更は行いません。</p>
-            <textarea rows={8} maxLength={12000} value={prolineNoticeText} onChange={(event) => { setProlineNoticeText(event.target.value); setProlineImportConfirmed(false) }} placeholder={'例：\nスケジュール/イベント予約機能で、予約を受け付けました。\n予約カレンダー：2:（購入のお客様）オンライン個別カウンセリング\n予約日時：2026年07月28日（火）10:00 ～ 11:00'} className="mt-3 w-full rounded-lg border border-cyan-200 bg-white px-3 py-2 text-sm" />
-            <label className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-white p-3 text-sm text-amber-900">
-              <input type="checkbox" checked={prolineImportConfirmed} onChange={(event) => setProlineImportConfirmed(event.target.checked)} className="mt-0.5 rounded border-gray-300" />
-              <span>この通知が、現在開いている「{detail?.chart?.customer_name || detail?.friend.display_name || 'お客様'}」の予約であることを確認しました。</span>
-            </label>
+            <h3 className="text-sm font-semibold text-cyan-950">プロライン予約を3段階で取り込む</h3>
+            <p className="mt-1 text-xs leading-5 text-cyan-900">LINE送信やプロライン側の変更は行いません。通知文そのものは保存せず、日時・相談メニュー・予約状態だけを保存します。</p>
+            <div className="mt-3 text-xs font-semibold text-cyan-950">1. 予約受付またはキャンセルの通知文を貼り付ける</div>
+            <textarea rows={8} maxLength={12000} value={prolineNoticeText} onChange={(event) => { setProlineNoticeText(event.target.value); setProlinePreview(null); setProlineImportConfirmed(false) }} placeholder={'例：\nスケジュール/イベント予約機能で、予約を受け付けました。\n予約カレンダー：2:（購入のお客様）オンライン個別カウンセリング\n予約日時：2026年07月28日（火）10:00 ～ 11:00'} className="mt-2 w-full rounded-lg border border-cyan-200 bg-white px-3 py-2 text-sm" />
+            <div className="mt-3 flex justify-end">
+              <button type="button" disabled={saving || !prolineNoticeText.trim()} onClick={() => void previewProlineBooking()} className="rounded-lg bg-cyan-700 px-5 py-2 text-sm font-semibold text-white disabled:opacity-40">{saving ? '読取中…' : '2. 通知内容を読み取る'}</button>
+            </div>
+            {prolinePreview && (
+              <div className="mt-4 rounded-lg border border-cyan-300 bg-white p-4">
+                <div className="text-sm font-semibold text-cyan-950">読み取った内容</div>
+                <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+                  <div><dt className="text-xs text-gray-500">お客様</dt><dd className="font-medium text-gray-900">{detail?.chart?.customer_name || detail?.friend.display_name || 'お客様'}</dd></div>
+                  <div><dt className="text-xs text-gray-500">予約状態</dt><dd className={`font-semibold ${prolinePreview.status === 'cancelled' ? 'text-red-700' : 'text-green-700'}`}>{prolinePreview.status === 'cancelled' ? 'キャンセル' : '予約済み'}</dd></div>
+                  <div><dt className="text-xs text-gray-500">開始日時</dt><dd className="font-medium text-gray-900">{new Date(prolinePreview.starts_at).toLocaleString('ja-JP')}</dd></div>
+                  <div><dt className="text-xs text-gray-500">終了日時</dt><dd className="font-medium text-gray-900">{prolinePreview.ends_at ? new Date(prolinePreview.ends_at).toLocaleString('ja-JP') : '通知に記載なし'}</dd></div>
+                  <div className="sm:col-span-2"><dt className="text-xs text-gray-500">相談メニュー</dt><dd className="font-medium text-gray-900">{prolinePreview.menu_name || '通知に記載なし'}</dd></div>
+                </dl>
+                {prolinePreview.already_imported && (
+                  <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm leading-6 text-blue-900">
+                    このプロライン予約は取り込み済みです。保存しても行は増えず、予約状態・終了日時・相談メニューだけを最新内容へ更新します。
+                  </div>
+                )}
+                {prolinePreview.same_time_suzuki_booking && (
+                  <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm leading-6 text-amber-950">
+                    鈴木薬舗OSにも同じ日時の予約があります。並行運用中の同じ予約か確認してください。プロライン履歴を保存しても、Googleカレンダー・Zoom・お客様へのLINEは新しく作成されません。
+                  </div>
+                )}
+                {prolinePreview.status === 'cancelled' && !prolinePreview.already_imported && (
+                  <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm leading-6 text-red-900">
+                    この日時のプロライン予約はまだカルテにありません。キャンセル通知だけを記録する場合は、お客様と日時を特に確認してください。
+                  </div>
+                )}
+                <label className="mt-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                  <input type="checkbox" checked={prolineImportConfirmed} onChange={(event) => setProlineImportConfirmed(event.target.checked)} className="mt-0.5 rounded border-gray-300" />
+                  <span>3. 上の内容が、現在開いている「{detail?.chart?.customer_name || detail?.friend.display_name || 'お客様'}」の予約であることを確認しました。</span>
+                </label>
+              </div>
+            )}
             <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setShowProlineImport(false)} className="rounded-lg border bg-white px-4 py-2 text-sm">閉じる</button>
-              <button type="button" disabled={saving || !prolineNoticeText.trim() || !prolineImportConfirmed} onClick={() => void importProlineBooking()} className="rounded-lg bg-cyan-700 px-5 py-2 text-sm font-semibold text-white disabled:opacity-40">{saving ? '取込中…' : '内容を確認して取り込む'}</button>
+              <button type="button" onClick={() => { setShowProlineImport(false); setProlinePreview(null); setProlineImportConfirmed(false) }} className="rounded-lg border bg-white px-4 py-2 text-sm">閉じる</button>
+              <button type="button" disabled={saving || !prolinePreview || !prolineImportConfirmed} onClick={() => void importProlineBooking()} className="rounded-lg bg-green-700 px-5 py-2 text-sm font-semibold text-white disabled:opacity-40">{saving ? '保存中…' : 'この内容を予約履歴へ保存'}</button>
             </div>
           </div>
         )}

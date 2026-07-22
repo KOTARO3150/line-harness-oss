@@ -1746,7 +1746,15 @@ export const consultationChartApi = {
     ),
   previewProlineBooking: (accountId: string, friendId: string, noticeText: string) =>
     fetchApi<{
-      preview: { starts_at: string; ends_at: string | null; status: 'scheduled' | 'cancelled'; menu_name: string | null; source: 'proline' };
+      preview: {
+        starts_at: string;
+        ends_at: string | null;
+        status: 'scheduled' | 'cancelled';
+        menu_name: string | null;
+        source: 'proline';
+        already_imported: boolean;
+        same_time_suzuki_booking: boolean;
+      };
     }>(
       `/api/consultation-charts/${encodeURIComponent(friendId)}/external-bookings/preview?account_id=${encodeURIComponent(accountId)}`,
       { method: 'POST', body: JSON.stringify({ notice_text: noticeText }) },

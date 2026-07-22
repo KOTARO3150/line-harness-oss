@@ -290,6 +290,18 @@ consultationCharts.post('/api/consultation-charts/:friendId/external-bookings/pr
   const parsed = parseProlineBookingNotice(body.notice_text);
   if (!parsed) return c.json({ error: 'unrecognized_proline_booking_notice' }, 422);
 
+  const existingProlineBooking = await c.env.DB.prepare(
+    `SELECT id, status FROM external_bookings
+      WHERE line_account_id = ? AND friend_id = ? AND provider = 'proline' AND starts_at = ?
+      LIMIT 1`,
+  ).bind(accountId, friendId, parsed.startsAt).first<{ id: string; status: string }>();
+  const sameTimeSuzukiBooking = await c.env.DB.prepare(
+    `SELECT id, status FROM bookings
+      WHERE line_account_id = ? AND friend_id = ? AND starts_at = ?
+        AND status NOT IN ('cancelled', 'rejected')
+      LIMIT 1`,
+  ).bind(accountId, friendId, parsed.startsAt).first<{ id: string; status: string }>();
+
   return c.json({
     preview: {
       starts_at: parsed.startsAt,
@@ -297,6 +309,8 @@ consultationCharts.post('/api/consultation-charts/:friendId/external-bookings/pr
       status: parsed.status,
       menu_name: parsed.menuName,
       source: 'proline' as const,
+      already_imported: Boolean(existingProlineBooking),
+      same_time_suzuki_booking: Boolean(sameTimeSuzukiBooking),
     },
   });
 });

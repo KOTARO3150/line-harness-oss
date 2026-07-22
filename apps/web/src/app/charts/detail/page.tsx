@@ -442,6 +442,21 @@ export default function ChartDetailPage() {
                   <div><dt className="text-xs text-gray-500">終了日時</dt><dd className="font-medium text-gray-900">{prolinePreview.ends_at ? new Date(prolinePreview.ends_at).toLocaleString('ja-JP') : '通知に記載なし'}</dd></div>
                   <div className="sm:col-span-2"><dt className="text-xs text-gray-500">相談メニュー</dt><dd className="font-medium text-gray-900">{prolinePreview.menu_name || '通知に記載なし'}</dd></div>
                 </dl>
+                {prolinePreview.already_imported && (
+                  <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm leading-6 text-blue-900">
+                    このプロライン予約は取り込み済みです。保存しても行は増えず、予約状態・終了日時・相談メニューだけを最新内容へ更新します。
+                  </div>
+                )}
+                {prolinePreview.same_time_suzuki_booking && (
+                  <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm leading-6 text-amber-950">
+                    鈴木薬舗OSにも同じ日時の予約があります。並行運用中の同じ予約か確認してください。プロライン履歴を保存しても、Googleカレンダー・Zoom・お客様へのLINEは新しく作成されません。
+                  </div>
+                )}
+                {prolinePreview.status === 'cancelled' && !prolinePreview.already_imported && (
+                  <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm leading-6 text-red-900">
+                    この日時のプロライン予約はまだカルテにありません。キャンセル通知だけを記録する場合は、お客様と日時を特に確認してください。
+                  </div>
+                )}
                 <label className="mt-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
                   <input type="checkbox" checked={prolineImportConfirmed} onChange={(event) => setProlineImportConfirmed(event.target.checked)} className="mt-0.5 rounded border-gray-300" />
                   <span>3. 上の内容が、現在開いている「{detail?.chart?.customer_name || detail?.friend.display_name || 'お客様'}」の予約であることを確認しました。</span>

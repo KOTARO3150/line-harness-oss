@@ -124,6 +124,14 @@ export class LineClient {
     return data;
   }
 
+  /** LINE公式アカウント側で、指定メッセージ以前を既読にする。 */
+  async markMessagesAsRead(markAsReadToken: string): Promise<unknown> {
+    const { data } = await this.request('POST', '/v2/bot/chat/markAsRead', {
+      markAsReadToken,
+    });
+    return data;
+  }
+
   // ─── Rich Menu ────────────────────────────────────────────────────────────
 
   async getRichMenuList(): Promise<{ richmenus: RichMenuObject[] }> {

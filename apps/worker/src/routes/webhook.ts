@@ -520,6 +520,7 @@ async function handleEvent(
     const msg = event.message as {
       id: string;
       type: string;
+      markAsReadToken?: string;
       fileName?: string;
       title?: string;
       packageId?: string | number;
@@ -574,7 +575,7 @@ async function handleEvent(
     // これが無いと resolved 除外 (unanswered-inbox CANDIDATES_SQL) が「解決済み後に
     // 画像だけ送ってきた友だち」をバッジ・未対応一覧から永久に落としてしまう。
     // 非 text は auto_reply keyword にマッチし得ないので常に要対応扱いで正しい。
-    await upsertChatOnMessage(db, friend.id);
+    await upsertChatOnMessage(db, friend.id, msg.markAsReadToken);
     return;
   }
 
@@ -723,7 +724,15 @@ async function handleEvent(
 
     // auto_replies にマッチしなかった = 自発メッセージ → unread にする
     if (!matched) {
-      await upsertChatOnMessage(db, friend.id);
+      await upsertChatOnMessage(db, friend.id, textMessage.markAsReadToken);
+    } else if (textMessage.markAsReadToken) {
+      // 自動返信で処理済みのメッセージも、公式LINE側では未読のまま残さない。
+      try {
+        await lineClient.markMessagesAsRead(textMessage.markAsReadToken);
+      } catch (err) {
+        // 既読同期の失敗で自動返信本体を再送させない。次の受信処理は継続する。
+        console.error('[webhook] Failed to mark auto-replied message as read', err);
+      }
     }
 
     // イベントバス発火: message_received

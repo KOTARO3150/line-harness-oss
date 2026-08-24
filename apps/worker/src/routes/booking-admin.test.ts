@@ -9,7 +9,10 @@ const availabilityMocks = {
 };
 vi.mock('../services/availability.js', () => availabilityMocks);
 
-const notifierMocks = { sendBookingNotification: vi.fn() };
+const notifierMocks = {
+  sendBookingNotification: vi.fn(),
+  renderNotificationText: vi.fn(() => '次回のご予約日\n8月20日（木）14:00から\nお待ちしております。'),
+};
 vi.mock('../services/booking-notifier.js', () => notifierMocks);
 
 const { default: booking } = await import('./booking.js');
@@ -217,6 +220,53 @@ describe('POST /api/booking/admin/bookings', () => {
     // booking_reminders INSERT が走っている(未来の予約なので day_before + hours_before)
     const reminders = db.calls.filter((c) => c.sql.includes('INSERT INTO booking_reminders'));
     expect(reminders.length).toBeGreaterThan(0);
+  });
+
+  test('201 creates a hidden zero-yen menu for an existing customer consultation', async () => {
+    const db = scriptedDb([
+      ['FROM friends', { first: { id: 'f1', is_following: 1 } }],
+      ['FROM staff WHERE', { first: { ok: 1 } }],
+      ['SELECT id FROM menus', { first: null }],
+      ['INSERT INTO menus', { run: { meta: { changes: 1 } } }],
+      ['INSERT INTO staff_menus', { run: { meta: { changes: 1 } } }],
+      [
+        'FROM menus m',
+        {
+          first: {
+            duration_minutes: 60,
+            buffer_after_minutes: 0,
+            dur: 60,
+            price: 0,
+            is_offered: 1,
+          },
+        },
+      ],
+      ['INSERT INTO bookings', { run: { meta: { changes: 1 } } }],
+    ]);
+    const { app, env } = makeApp(db);
+    const res = await app.request(
+      '/api/booking/admin/bookings?account_id=acc1',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          friend_id: 'f1',
+          staff_id: 's1',
+          starts_at: futureStartsAt,
+          consultation_type: 'in_person',
+          notification_style: 'next_appointment',
+        }),
+        headers: { 'Content-Type': 'application/json' },
+      },
+      env,
+      execCtx,
+    );
+    expect(res.status).toBe(201);
+    const menuInsert = db.calls.find((c) => c.sql.includes('INSERT INTO menus'));
+    expect(menuInsert?.params).toContain('店頭相談');
+    expect(menuInsert?.params).toContain('既知のお客様用');
+    const bookingInsert = db.calls.find((c) => c.sql.includes('INSERT INTO bookings'));
+    expect(bookingInsert?.params).toContain(0);
+    expect(db.calls.some((c) => c.sql.includes('FROM staff_shifts'))).toBe(false);
   });
 
   test('409 on slot conflict (atomic insert 0 rows)', async () => {

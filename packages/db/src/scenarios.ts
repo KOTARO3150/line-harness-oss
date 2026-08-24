@@ -14,6 +14,9 @@ export interface Scenario {
   line_account_id: string | null;
   is_active: number;
   delivery_mode: DeliveryMode;
+  stop_on_customer_reply: number;
+  stop_on_booking: number;
+  stop_on_consultation: number;
   created_at: string;
   updated_at: string;
 }
@@ -49,6 +52,7 @@ export interface FriendScenario {
   started_at: string;
   next_delivery_at: string | null;
   updated_at: string;
+  completion_reason: string | null;
 }
 
 // ============================================================
@@ -130,7 +134,17 @@ export async function createScenario(
 }
 
 export type UpdateScenarioInput = Partial<
-  Pick<Scenario, 'name' | 'description' | 'trigger_type' | 'trigger_tag_id' | 'is_active'>
+  Pick<
+    Scenario,
+    | 'name'
+    | 'description'
+    | 'trigger_type'
+    | 'trigger_tag_id'
+    | 'is_active'
+    | 'stop_on_customer_reply'
+    | 'stop_on_booking'
+    | 'stop_on_consultation'
+  >
 >;
 
 export async function updateScenario(
@@ -161,6 +175,18 @@ export async function updateScenario(
   if (updates.is_active !== undefined) {
     fields.push('is_active = ?');
     values.push(updates.is_active);
+  }
+  if (updates.stop_on_customer_reply !== undefined) {
+    fields.push('stop_on_customer_reply = ?');
+    values.push(updates.stop_on_customer_reply);
+  }
+  if (updates.stop_on_booking !== undefined) {
+    fields.push('stop_on_booking = ?');
+    values.push(updates.stop_on_booking);
+  }
+  if (updates.stop_on_consultation !== undefined) {
+    fields.push('stop_on_consultation = ?');
+    values.push(updates.stop_on_consultation);
   }
 
   if (fields.length === 0) {
@@ -365,9 +391,11 @@ export async function enrollFriendInScenario(
   db: D1Database,
   friendId: string,
   scenarioId: string,
+  startAt?: string,
 ): Promise<FriendScenario | null> {
   const id = crypto.randomUUID();
   const now = jstNow();
+  const startedAt = startAt ?? now;
 
   // delivery_mode を取得（migration 037 適用前の DB では 'relative' が DEFAULT で既に入っている）
   const scenarioRow = await db
@@ -397,7 +425,7 @@ export async function enrollFriendInScenario(
         `INSERT OR IGNORE INTO friend_scenarios (id, friend_id, scenario_id, current_step_order, status, started_at, next_delivery_at, updated_at)
          VALUES (?, ?, ?, 0, 'completed', ?, NULL, ?)`,
       )
-      .bind(id, friendId, scenarioId, now, now)
+      .bind(id, friendId, scenarioId, startedAt, now)
       .run();
 
     if (!result.meta.changes || result.meta.changes === 0) return null;
@@ -408,7 +436,9 @@ export async function enrollFriendInScenario(
       .first<FriendScenario>())!;
   }
 
-  const enrolledAtDate = new Date(Date.now() + 9 * 60 * 60_000);
+  const enrolledAtDate = startAt
+    ? new Date(new Date(startAt).getTime() + 9 * 60 * 60_000)
+    : new Date(Date.now() + 9 * 60 * 60_000);
   const nextDeliveryDate = computeNextDeliveryAt(
     { delivery_mode: scenarioRow.delivery_mode },
     firstStep,
@@ -428,7 +458,7 @@ export async function enrollFriendInScenario(
       `INSERT OR IGNORE INTO friend_scenarios (id, friend_id, scenario_id, current_step_order, status, started_at, next_delivery_at, updated_at)
        VALUES (?, ?, ?, -1, 'active', ?, ?, ?)`,
     )
-    .bind(id, friendId, scenarioId, now, nextDeliveryAt, now)
+    .bind(id, friendId, scenarioId, startedAt, nextDeliveryAt, now)
     .run();
 
   if (!result.meta.changes || result.meta.changes === 0) return null;
@@ -521,6 +551,7 @@ export async function advanceFriendScenario(
 export async function completeFriendScenario(
   db: D1Database,
   id: string,
+  reason: string | null = null,
 ): Promise<void> {
   const now = jstNow();
   await db
@@ -528,9 +559,10 @@ export async function completeFriendScenario(
       `UPDATE friend_scenarios
        SET status = 'completed',
            next_delivery_at = NULL,
+           completion_reason = COALESCE(?, completion_reason),
            updated_at = ?
        WHERE id = ?`,
     )
-    .bind(now, id)
+    .bind(reason, now, id)
     .run();
 }

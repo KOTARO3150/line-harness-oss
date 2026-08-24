@@ -11,6 +11,8 @@ interface Props {
   pageSize: number
   loading: boolean
   onPageChange: (page: number) => void
+  onResolve: (friendId: string) => void
+  resolvingFriendId?: string | null
 }
 
 export default function InboxList({
@@ -20,6 +22,8 @@ export default function InboxList({
   pageSize,
   loading,
   onPageChange,
+  onResolve,
+  resolvingFriendId,
 }: Props) {
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const start = total === 0 ? 0 : (page - 1) * pageSize + 1
@@ -34,7 +38,12 @@ export default function InboxList({
       ) : (
         <div>
           {rows.map((row) => (
-            <InboxRow key={row.friendId} row={row} />
+            <InboxRow
+              key={row.friendId}
+              row={row}
+              onResolve={onResolve}
+              resolving={resolvingFriendId === row.friendId}
+            />
           ))}
         </div>
       )}

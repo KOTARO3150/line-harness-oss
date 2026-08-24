@@ -14,8 +14,9 @@ import type { Env } from '../index.js';
 
 const staff = new Hono<Env>();
 
-function maskApiKey(key: string): string {
-  return `lh_****${key.slice(-4)}`;
+function maskApiKey(row: StaffMember): string {
+  const hint = row.api_key_hint || (row.api_key.startsWith('lh_') ? row.api_key.slice(-4) : '----');
+  return `lh_****${hint}`;
 }
 
 function serializeStaff(row: StaffMember, masked = true) {
@@ -24,7 +25,7 @@ function serializeStaff(row: StaffMember, masked = true) {
     name: row.name,
     email: row.email,
     role: row.role,
-    apiKey: masked ? maskApiKey(row.api_key) : row.api_key,
+    apiKey: masked ? maskApiKey(row) : row.api_key,
     isActive: Boolean(row.is_active),
     createdAt: row.created_at,
     updatedAt: row.updated_at,

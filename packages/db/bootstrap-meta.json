@@ -55,7 +55,20 @@
     "046_link_tracking_controls.sql",
     "047_affiliate_offers.sql",
     "048_chats_friend_unique.sql",
-    "049_tracked_links_short_code.sql"
+    "049_tracked_links_short_code.sql",
+    "050_booking_zoom.sql",
+    "051_consultation_charts.sql",
+    "052_consultation_followups.sql",
+    "053_paypal_first_consultation.sql",
+    "054_external_bookings.sql",
+    "055_chat_read_sync.sql",
+    "056_staff_api_key_hash.sql",
+    "057_scenario_stop_rules.sql",
+    "058_video_library.sql",
+    "059_order_ledger.sql",
+    "060_order_editing.sql",
+    "061_order_cancellation_returns.sql",
+    "062_order_shipping_notification.sql"
   ],
-  "migrationCount": 56
+  "migrationCount": 69
 }

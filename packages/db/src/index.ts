@@ -33,6 +33,8 @@ export * from './affiliate-offers';
 export * from './affiliate-attribution';
 export * from './affiliate-report';
 export * from './account-settings';
+export * from './video-library';
+export * from './orders';
 
 /**
  * Thin wrapper around D1Database.

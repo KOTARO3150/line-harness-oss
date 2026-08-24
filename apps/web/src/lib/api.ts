@@ -827,6 +827,20 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify(data),
       }),
+    bulkResolve: (ids: string[]) =>
+      fetchApi<ApiResponse<{ updated: number }>>('/api/chats/bulk-resolve', {
+        method: 'POST',
+        body: JSON.stringify({ ids }),
+      }),
+    bulkStatus: (ids: string[], status: 'in_progress' | 'resolved') =>
+      fetchApi<ApiResponse<{ updated: number; status: 'in_progress' | 'resolved' }>>('/api/chats/bulk-status', {
+        method: 'POST',
+        body: JSON.stringify({ ids, status }),
+      }),
+    markRead: (id: string) =>
+      fetchApi<ApiResponse<{ marked: boolean }>>(`/api/chats/${id}/read`, {
+        method: 'POST',
+      }),
     send: (id: string, data: { content: string; messageType?: string }) =>
       fetchApi<ApiResponse<unknown>>(`/api/chats/${id}/send`, {
         method: 'POST',
@@ -1643,6 +1657,22 @@ export const bookingApi = {
     fetchApi<{ count: number }>(withAccount('/api/booking/admin/pending-count', accountId)),
   zoomStatus: (accountId: string) =>
     fetchApi<{ configured: boolean }>(withAccount('/api/booking/admin/zoom-status', accountId)),
+  createConfirmedBooking: (
+    accountId: string,
+    body: {
+      friend_id: string;
+      menu_id?: string;
+      staff_id: string;
+      starts_at: string;
+      customer_note?: string;
+      consultation_type?: 'in_person' | 'line' | 'phone' | 'online';
+      notification_style?: 'default' | 'next_appointment';
+    },
+  ) =>
+    fetchApi<{ booking_id: string; status: 'confirmed' }>(
+      withAccount('/api/booking/admin/bookings', accountId),
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
 };
 
 export interface ConsultationChartListItem {
@@ -1707,12 +1737,13 @@ export const consultationChartApi = {
   today: (accountId: string) =>
     fetchApi<{
       date: string;
-      counts: { bookings: number; submissions: number; warnings: number; followUps: number; unanswered: number };
+      counts: { bookings: number; submissions: number; warnings: number; followUps: number; unanswered: number; orders: number };
       bookings: Array<{ id: string; friend_id: string; starts_at: string; status: string; friend_name: string | null; menu_name: string; staff_name: string }>;
       submissions: Array<{ id: string; friend_id: string; created_at: string; friend_name: string | null; form_name: string }>;
       warnings: Array<{ friend_id: string; customer_name: string | null; has_safety_notes: number; has_allergies: number; has_medications: number }>;
       followUps: Array<{ id: string; friend_id: string; customer_name: string | null; follow_up_plan: string | null; follow_up_due_date: string }>;
       unanswered: Array<{ friendId: string; displayName: string | null; lastIncomingAt: string; lastIncomingContent: string; lastIncomingType: string }>;
+      orders: Array<{ id: string; friend_id: string | null; customer_name_snapshot: string; status: OrderStatus; updated_at: string; item_summary: string }>;
     }>(`/api/suzuki/today?account_id=${encodeURIComponent(accountId)}`),
   list: (accountId: string, filters: { search?: string; safety?: string; tagId?: string } = {}) =>
     fetchApi<{ charts: ConsultationChartListItem[] }>(
@@ -1743,6 +1774,11 @@ export const consultationChartApi = {
     fetchApi<{ id: string }>(
       `/api/consultation-charts/${encodeURIComponent(friendId)}/records?account_id=${encodeURIComponent(accountId)}`,
       { method: 'POST', body: JSON.stringify(body) },
+    ),
+  startMedicationFollowUp: (accountId: string, friendId: string, startAt: string) =>
+    fetchApi<{ enrollmentId: string; scenarioId: string; startAt: string; scheduleDays: number[] }>(
+      `/api/consultation-charts/${encodeURIComponent(friendId)}/medication-follow-up?account_id=${encodeURIComponent(accountId)}`,
+      { method: 'POST', body: JSON.stringify({ startAt, confirmed: true }) },
     ),
   previewProlineBooking: (accountId: string, friendId: string, noticeText: string) =>
     fetchApi<{
@@ -1807,6 +1843,113 @@ export interface EventListItem {
   target_type?: 'single' | 'multi-account-dedup';
   account_ids?: string | string[] | null;
   line_account_id?: string;
+}
+
+export type OrderStatus = 'unconfirmed' | 'preparing' | 'ready_to_ship' | 'shipped'
+export type OrderSource = 'line' | 'phone' | 'store' | 'other'
+export type OrderLifecycleStatus = 'active' | 'cancelled' | 'voided' | 'returned'
+export type OrderRefundType = 'none' | 'partial' | 'full'
+export type OrderRefundStatus = 'not_required' | 'pending' | 'completed'
+export type OrderLedgerItem = {
+  id: string
+  lineAccountId: string
+  friendId: string | null
+  friendName: string | null
+  friendPictureUrl: string | null
+  status: OrderStatus
+  source: OrderSource
+  customerName: string
+  shippingMethod: string | null
+  carrier: string | null
+  trackingNumber: string | null
+  expectedDeliveryDate: string | null
+  deliveryTimeSlot: string | null
+  deliveryInstruction: string | null
+  shippingNotificationStatus: 'not_sent' | 'sent' | 'failed' | 'not_applicable'
+  shippingNotificationSentAt: string | null
+  shippingNotificationError: string | null
+  note: string | null
+  preparingAt: string | null
+  readyToShipAt: string | null
+  shippedAt: string | null
+  lifecycleStatus: OrderLifecycleStatus
+  lifecycleReason: string | null
+  lifecycleAt: string | null
+  refundType: OrderRefundType
+  refundStatus: OrderRefundStatus
+  refundAmount: number | null
+  refundProcessedAt: string | null
+  createdAt: string
+  updatedAt: string
+  items: Array<{ id: string; itemName: string; quantity: number; quantityUnit: string; unitPrice: number | null }>
+}
+
+export const orderApi = {
+  list: (lineAccountId: string, friendId?: string) => {
+    const params = new URLSearchParams({ lineAccountId })
+    if (friendId) params.set('friendId', friendId)
+    return fetchApi<{
+      success: boolean
+      data: { orders: OrderLedgerItem[]; counts: Record<OrderStatus, number> }
+    }>(`/api/orders?${params}`)
+  },
+  create: (body: {
+    lineAccountId: string
+    friendId?: string | null
+    customerName: string
+    source: OrderSource
+    shippingMethod?: string | null
+    note?: string | null
+    items: Array<{ itemName: string; quantity: number; quantityUnit?: string; unitPrice?: number | null }>
+  }) => fetchApi<{ success: boolean; data: OrderLedgerItem }>('/api/orders', {
+    method: 'POST', body: JSON.stringify(body),
+  }),
+  update: (id: string, body: {
+    lineAccountId: string
+    expectedUpdatedAt: string
+    customerName: string
+    source: OrderSource
+    shippingMethod?: string | null
+    carrier?: string | null
+    trackingNumber?: string | null
+    expectedDeliveryDate?: string | null
+    deliveryTimeSlot?: string | null
+    deliveryInstruction?: string | null
+    note?: string | null
+    items: Array<{ itemName: string; quantity: number; quantityUnit?: string; unitPrice?: number | null }>
+  }) => fetchApi<{ success: boolean; data: OrderLedgerItem }>(`/api/orders/${encodeURIComponent(id)}`, {
+    method: 'PATCH', body: JSON.stringify(body),
+  }),
+  transition: (id: string, body: {
+    lineAccountId: string
+    status: OrderStatus
+    confirmShipped?: boolean
+    carrier?: string | null
+    trackingNumber?: string | null
+    expectedDeliveryDate?: string | null
+    deliveryTimeSlot?: string | null
+    deliveryInstruction?: string | null
+    notifyLine?: boolean
+    notificationText?: string | null
+    note?: string | null
+  }) => fetchApi<{ success: boolean; data: OrderLedgerItem; notification?: { sent: boolean; error?: string } | null }>(`/api/orders/${encodeURIComponent(id)}/status`, {
+    method: 'PATCH', body: JSON.stringify(body),
+  }),
+  bulkAdvance: (ids: string[], status: OrderStatus) =>
+    fetchApi<{ success: boolean; data: { updated: number } }>('/api/orders/bulk-advance', {
+      method: 'POST', body: JSON.stringify({ ids, status }),
+    }),
+  updateLifecycle: (id: string, body: {
+    lineAccountId: string
+    expectedUpdatedAt: string
+    action: 'cancel' | 'void' | 'return_refund' | 'update_refund'
+    reason: string
+    refundType?: OrderRefundType
+    refundStatus?: OrderRefundStatus
+    refundAmount?: number | null
+  }) => fetchApi<{ success: boolean; data: OrderLedgerItem }>(`/api/orders/${encodeURIComponent(id)}/lifecycle`, {
+    method: 'PATCH', body: JSON.stringify(body),
+  }),
 }
 
 export interface EventDetail {

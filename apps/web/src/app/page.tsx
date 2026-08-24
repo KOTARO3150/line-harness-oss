@@ -76,7 +76,41 @@ function StatCard({ title, value, loading, icon, href, accentColor = '#06C755' }
 function TodayWorklist({ data, loading }: { data: TodayData | null; loading: boolean }) {
   if (loading) return <div className="mb-6 h-44 animate-pulse rounded-xl border border-gray-200 bg-white" />
   if (!data) return null
-  const total = data.counts.bookings + data.counts.submissions + data.counts.warnings + data.counts.followUps + data.counts.unanswered
+  const total = data.counts.bookings + data.counts.submissions + data.counts.warnings + data.counts.followUps + data.counts.unanswered + data.counts.orders
+  const orderStatusLabels = { unconfirmed: '未確認', preparing: '準備中', ready_to_ship: '発送待ち', shipped: '発送済み' }
+  const flowSteps = [
+    {
+      title: '相談受付',
+      count: data.counts.unanswered,
+      href: '/notifications',
+      description: 'LINEの新しい相談を確認',
+    },
+    {
+      title: '内容確認',
+      count: data.counts.submissions + data.counts.warnings,
+      href: data.counts.submissions > 0 ? '/form-submissions' : '/charts',
+      description: '問診と安全情報を整理',
+    },
+    {
+      title: '予約・対応',
+      count: data.counts.bookings,
+      href: '/booking/bookings',
+      description: '相談方法と日時を確定',
+    },
+    {
+      title: '商品・発送',
+      count: data.counts.orders,
+      href: '/orders',
+      description: '注文内容から発送完了まで',
+    },
+    {
+      title: '継続確認',
+      count: data.counts.followUps,
+      href: '/charts',
+      description: '服用後の体調を確認',
+    },
+  ]
+  const firstPendingIndex = flowSteps.findIndex((step) => step.count > 0)
   const sections = [
     {
       key: 'bookings', title: '本日の予約', count: data.counts.bookings, color: 'green', href: '/booking/bookings',
@@ -117,19 +151,83 @@ function TodayWorklist({ data, loading }: { data: TodayData | null; loading: boo
         detail: `${item.lastIncomingContent.slice(0, 50)} · ${new Date(item.lastIncomingAt).toLocaleString('ja-JP')}`,
       })),
     },
+    {
+      key: 'orders', title: '発送までの注文', count: data.counts.orders, color: 'orange', href: '/orders',
+      rows: data.orders.map((item) => ({
+        id: item.id, href: '/orders', title: item.customer_name_snapshot || '名前未設定',
+        detail: `${orderStatusLabels[item.status]} · ${item.item_summary}`,
+      })),
+    },
   ]
   const colors: Record<string, string> = {
     green: 'border-green-200 bg-green-50 text-green-800', blue: 'border-blue-200 bg-blue-50 text-blue-800',
     amber: 'border-amber-200 bg-amber-50 text-amber-900', red: 'border-red-200 bg-red-50 text-red-800',
     purple: 'border-purple-200 bg-purple-50 text-purple-800',
+    orange: 'border-orange-200 bg-orange-50 text-orange-800',
   }
   return (
     <section className="mb-6 rounded-xl border border-gray-200 bg-white p-4 sm:p-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div><h2 className="text-lg font-bold text-gray-900">今日対応するお客様</h2><p className="mt-0.5 text-xs text-gray-500">予約・問診・安全確認・LINE返信をここから始めます</p></div>
+        <div><h2 className="text-lg font-bold text-gray-900">今日対応するお客様</h2><p className="mt-0.5 text-xs text-gray-500">予約・問診・安全確認・LINE返信・発送をここから始めます</p></div>
         <span className={`rounded-full px-3 py-1 text-sm font-semibold ${total > 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>{total > 0 ? `確認 ${total}件` : '対応事項なし'}</span>
       </div>
-      <div className="mt-4 grid gap-3 xl:grid-cols-2">
+      <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-3 sm:p-4">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-bold text-gray-900">今日の流れ</h3>
+            <p className="mt-0.5 text-xs text-gray-500">
+              数字が残っている工程から進めます。「最初に確認」が今日の優先入口です。
+            </p>
+          </div>
+          {firstPendingIndex === -1 && (
+            <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+              今日の確認は完了
+            </span>
+          )}
+        </div>
+        <div className="mt-3 grid gap-2 lg:grid-cols-5">
+          {flowSteps.map((step, index) => {
+            const isFirstPending = index === firstPendingIndex
+            const isCompleted = step.count === 0
+            const cardClass = isFirstPending
+              ? 'border-amber-300 bg-white text-amber-950 shadow-sm ring-1 ring-amber-200'
+              : isCompleted
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                : 'border-sky-200 bg-sky-50 text-sky-900'
+            const badgeClass = isFirstPending
+              ? 'bg-amber-100 text-amber-800'
+              : isCompleted
+                ? 'bg-emerald-100 text-emerald-700'
+                : 'bg-sky-100 text-sky-700'
+            return (
+              <Link
+                key={step.title}
+                href={step.href}
+                className={`rounded-xl border p-3 transition hover:-translate-y-0.5 hover:shadow-sm ${cardClass}`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <span className="text-xs font-semibold opacity-70">{index + 1}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${badgeClass}`}>
+                    {isFirstPending ? '最初に確認' : isCompleted ? '完了' : '対応あり'}
+                  </span>
+                </div>
+                <div className="mt-3 text-sm font-bold">{step.title}</div>
+                <div className="mt-1 text-2xl font-bold">
+                  {step.count}<span className="ml-1 text-xs font-medium">件</span>
+                </div>
+                <div className="mt-2 text-xs opacity-75">{step.description}</div>
+              </Link>
+            )
+          })}
+        </div>
+      </div>
+      <div className="mt-5">
+        <h3 className="text-sm font-bold text-gray-900">作業別の一覧</h3>
+        <p className="mt-0.5 text-xs text-gray-500">
+          詳しい内容を確認して、予約・発送・フォローへ進めます
+        </p>
+      </div>
+      <div className="mt-2 grid gap-3 xl:grid-cols-2">
         {sections.map((section) => (
           <div key={section.key} className={`rounded-xl border p-3 ${colors[section.color]}`}>
             <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">{section.title} <span className="ml-1">{section.count}件</span></h3><Link href={section.href} className="text-xs underline underline-offset-2">一覧へ</Link></div>

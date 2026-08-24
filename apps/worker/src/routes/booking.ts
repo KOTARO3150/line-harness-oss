@@ -20,7 +20,7 @@ import {
   findIdempotencyResponse,
   saveIdempotencyResponse,
 } from '../services/booking-idempotency.js';
-import { sendBookingNotification } from '../services/booking-notifier.js';
+import { renderNotificationText, sendBookingNotification } from '../services/booking-notifier.js';
 import { insertConfirmationReminders } from '../services/booking-confirm.js';
 import {
   removeBookingFromCalendar,
@@ -40,6 +40,65 @@ import {
 } from '../services/booking-types.js';
 
 const booking = new Hono<Env>();
+
+const EXISTING_CUSTOMER_MENU_CATEGORY = '既知のお客様用';
+const EXISTING_CUSTOMER_MENUS = {
+  in_person: { name: '店頭相談', createZoomMeeting: 0 },
+  line: { name: 'LINE相談', createZoomMeeting: 0 },
+  phone: { name: '電話相談', createZoomMeeting: 0 },
+  online: { name: 'オンライン相談', createZoomMeeting: 1 },
+} as const;
+type ExistingCustomerConsultationType = keyof typeof EXISTING_CUSTOMER_MENUS;
+
+async function ensureExistingCustomerMenu(
+  db: D1Database,
+  accountId: string,
+  staffId: string,
+  consultationType: ExistingCustomerConsultationType,
+): Promise<string> {
+  const definition = EXISTING_CUSTOMER_MENUS[consultationType];
+  let menu = await db
+    .prepare(
+      `SELECT id FROM menus
+        WHERE line_account_id = ? AND name = ? AND category_label = ? AND deleted_at IS NULL
+        ORDER BY created_at DESC LIMIT 1`,
+    )
+    .bind(accountId, definition.name, EXISTING_CUSTOMER_MENU_CATEGORY)
+    .first<{ id: string }>();
+
+  if (!menu) {
+    const id = crypto.randomUUID();
+    await db
+      .prepare(
+        `INSERT INTO menus
+          (id, line_account_id, name, category_label, description,
+           duration_minutes, buffer_after_minutes, base_price, sort_order,
+           is_active, create_zoom_meeting, require_paypal_first_booking)
+         VALUES (?, ?, ?, ?, ?, 60, 0, 0, ?, 0, ?, 0)`,
+      )
+      .bind(
+        id,
+        accountId,
+        definition.name,
+        EXISTING_CUSTOMER_MENU_CATEGORY,
+        '既知のお客様の次回予約専用（相談料なし）',
+        900 + Object.keys(EXISTING_CUSTOMER_MENUS).indexOf(consultationType),
+        definition.createZoomMeeting,
+      )
+      .run();
+    menu = { id };
+  }
+
+  await db
+    .prepare(
+      `INSERT INTO staff_menus (staff_id, menu_id, is_offered, override_duration_minutes, override_price)
+       VALUES (?, ?, 1, NULL, 0)
+       ON CONFLICT(staff_id, menu_id) DO UPDATE SET is_offered = 1, override_price = 0`,
+    )
+    .bind(staffId, menu.id)
+    .run();
+  return menu.id;
+}
 
 function zoomConfig(c: Context<Env>): ZoomConfig {
   return {
@@ -193,11 +252,11 @@ async function resolveFriendId(
 async function notifyForBooking(
   db: D1Database,
   bookingId: string,
-  kind: 'requested' | 'approved' | 'rejected',
+  kind: 'requested' | 'approved' | 'next_appointment' | 'rejected' | 'cancelled',
 ): Promise<void> {
   const row = await db
     .prepare(
-      `SELECT b.starts_at, b.zoom_join_url,
+      `SELECT b.starts_at, b.zoom_join_url, b.friend_id,
               m.name AS menu_name,
               s.display_name AS staff_name,
               la.channel_access_token,
@@ -216,6 +275,7 @@ async function notifyForBooking(
       staff_name: string;
       channel_access_token: string;
       line_user_id: string;
+      friend_id: string;
       zoom_join_url: string | null;
     }>();
   if (!row) return;
@@ -231,6 +291,33 @@ async function notifyForBooking(
       joinUrl: row.zoom_join_url,
     },
   });
+  if (kind === 'next_appointment') {
+    const text = renderNotificationText(kind, {
+      menuName: row.menu_name,
+      staffName: row.staff_name,
+      startsAtJst: startsAtJst(row.starts_at),
+      hoursBefore: 0,
+      joinUrl: row.zoom_join_url,
+    });
+    await db
+      .prepare(
+        `INSERT INTO messages_log
+          (id, friend_id, direction, message_type, content, source)
+         VALUES (?, ?, 'outgoing', 'text', ?, 'manual')`,
+      )
+      .bind(crypto.randomUUID(), row.friend_id, text)
+      .run();
+    await db
+      .prepare(
+        `UPDATE chats
+            SET status = 'resolved',
+                last_message_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'),
+                updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+          WHERE friend_id = ?`,
+      )
+      .bind(row.friend_id)
+      .run();
+  }
 }
 
 // ================================================================
@@ -809,12 +896,14 @@ booking.post('/api/booking/admin/bookings', async (c) => {
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
   const body = await c.req.json<{
     friend_id: string;
-    menu_id: string;
+    menu_id?: string;
     staff_id: string;
     starts_at: string; // UTC ISO8601
     customer_note?: string;
+    consultation_type?: ExistingCustomerConsultationType;
+    notification_style?: 'default' | 'next_appointment';
   }>();
-  if (!body.friend_id || !body.menu_id || !body.staff_id || !body.starts_at) {
+  if (!body.friend_id || !body.staff_id || !body.starts_at) {
     return c.json({ error: 'missing_params' }, 400);
   }
 
@@ -830,6 +919,20 @@ booking.post('/api/booking/admin/bookings', async (c) => {
     return c.json({ error: 'staff_not_found' }, 404);
   }
 
+  let menuId = body.menu_id;
+  if (body.consultation_type) {
+    if (!Object.prototype.hasOwnProperty.call(EXISTING_CUSTOMER_MENUS, body.consultation_type)) {
+      return c.json({ error: 'invalid_consultation_type' }, 400);
+    }
+    menuId = await ensureExistingCustomerMenu(
+      c.env.DB,
+      accountId,
+      body.staff_id,
+      body.consultation_type,
+    );
+  }
+  if (!menuId) return c.json({ error: 'missing_menu_id' }, 400);
+
   const menuRow = await c.env.DB
     .prepare(
       `SELECT m.id, m.duration_minutes, m.buffer_after_minutes, m.base_price,
@@ -839,9 +942,10 @@ booking.post('/api/booking/admin/bookings', async (c) => {
          FROM menus m
          LEFT JOIN staff_menus sm ON sm.menu_id = m.id AND sm.staff_id = ?2
         WHERE m.id = ?1 AND m.line_account_id = ?3
-          AND m.deleted_at IS NULL AND m.is_active = 1`,
+          AND m.deleted_at IS NULL
+          AND (m.is_active = 1 OR m.category_label = ?)`,
     )
-    .bind(body.menu_id, body.staff_id, accountId)
+    .bind(menuId, body.staff_id, accountId, EXISTING_CUSTOMER_MENU_CATEGORY)
     .first<{ duration_minutes: number; buffer_after_minutes: number; dur: number; price: number; is_offered: number | null }>();
   if (!menuRow || menuRow.is_offered !== 1) {
     return c.json({ error: 'menu_not_offered' }, 422);
@@ -857,37 +961,42 @@ booking.post('/api/booking/admin/bookings', async (c) => {
   const endsAt = new Date(startsAt.getTime() + menuRow.dur * 60_000);
   const blockEndsAt = new Date(endsAt.getTime() + menuRow.buffer_after_minutes * 60_000);
 
-  // Shift + slot validation — same shape as the LIFF create route.
+  // consultation_type is used by the operator's existing-customer "next
+  // appointment" flow. Since the date/time was agreed directly with the
+  // customer, that flow may record any future time without a generated shift.
+  // Ordinary/customer-facing bookings keep the normal shift validation.
   const startJstDate = new Date(startsAt.getTime() + 9 * 3600_000).toISOString().slice(0, 10);
   const startJstHHMM = new Date(startsAt.getTime() + 9 * 3600_000).toISOString().slice(11, 16);
-  const shift = await c.env.DB
-    .prepare(`SELECT start_time, end_time FROM staff_shifts WHERE staff_id = ? AND work_date = ?`)
-    .bind(body.staff_id, startJstDate)
-    .first<{ start_time: string; end_time: string }>();
-  if (!shift) return c.json({ error: 'out_of_shift' }, 422);
-  const existingBookings = await c.env.DB
-    .prepare(
-      `SELECT starts_at, block_ends_at FROM bookings
-        WHERE staff_id = ? AND status IN ('requested','confirmed')
-          AND starts_at < ? AND block_ends_at > ?`,
-    )
-    .bind(
-      body.staff_id,
-      jstDayWindowUtc(startJstDate).endUtc,
-      jstDayWindowUtc(startJstDate).startUtc,
-    )
-    .all<{ starts_at: string; block_ends_at: string }>();
-  const slotsToday = computeSlots({
-    working: [{ start: shift.start_time, end: shift.end_time }],
-    busy: existingBookings.results.map((b) => ({
-      start: new Date(new Date(b.starts_at).getTime() + 9 * 3600_000).toISOString().slice(11, 16),
-      end: new Date(new Date(b.block_ends_at).getTime() + 9 * 3600_000).toISOString().slice(11, 16),
-    })),
-    menu: { duration_minutes: menuRow.dur, buffer_after_minutes: menuRow.buffer_after_minutes },
-    granularityMinutes: 30,
-  });
-  if (!slotsToday.some((s) => s.start === startJstHHMM)) {
-    return c.json({ error: 'slot_not_available' }, 422);
+  if (!body.consultation_type) {
+    const shift = await c.env.DB
+      .prepare(`SELECT start_time, end_time FROM staff_shifts WHERE staff_id = ? AND work_date = ?`)
+      .bind(body.staff_id, startJstDate)
+      .first<{ start_time: string; end_time: string }>();
+    if (!shift) return c.json({ error: 'out_of_shift' }, 422);
+    const existingBookings = await c.env.DB
+      .prepare(
+        `SELECT starts_at, block_ends_at FROM bookings
+          WHERE staff_id = ? AND status IN ('requested','confirmed')
+            AND starts_at < ? AND block_ends_at > ?`,
+      )
+      .bind(
+        body.staff_id,
+        jstDayWindowUtc(startJstDate).endUtc,
+        jstDayWindowUtc(startJstDate).startUtc,
+      )
+      .all<{ starts_at: string; block_ends_at: string }>();
+    const slotsToday = computeSlots({
+      working: [{ start: shift.start_time, end: shift.end_time }],
+      busy: existingBookings.results.map((b) => ({
+        start: new Date(new Date(b.starts_at).getTime() + 9 * 3600_000).toISOString().slice(11, 16),
+        end: new Date(new Date(b.block_ends_at).getTime() + 9 * 3600_000).toISOString().slice(11, 16),
+      })),
+      menu: { duration_minutes: menuRow.dur, buffer_after_minutes: menuRow.buffer_after_minutes },
+      granularityMinutes: 30,
+    });
+    if (!slotsToday.some((s) => s.start === startJstHHMM)) {
+      return c.json({ error: 'slot_not_available' }, 422);
+    }
   }
 
   const bookingId = crypto.randomUUID();
@@ -912,7 +1021,7 @@ booking.post('/api/booking/admin/bookings', async (c) => {
       accountId,
       body.friend_id,
       body.staff_id,
-      body.menu_id,
+      menuId,
       startsAt.toISOString(),
       endsAt.toISOString(),
       blockEndsAt.toISOString(),
@@ -954,7 +1063,11 @@ booking.post('/api/booking/admin/bookings', async (c) => {
         clientId: c.env.GOOGLE_CLIENT_ID,
         clientSecret: c.env.GOOGLE_CLIENT_SECRET,
       }).catch((err) => console.error('booking calendar sync (proxy-create) failed:', err)),
-      notifyForBooking(c.env.DB, bookingId, 'approved').catch((err) =>
+      notifyForBooking(
+        c.env.DB,
+        bookingId,
+        body.notification_style === 'next_appointment' ? 'next_appointment' : 'approved',
+      ).catch((err) =>
         console.error('booking notify (proxy-create) failed:', err),
       ),
     ]);
@@ -1380,6 +1493,13 @@ booking.patch('/api/booking/admin/requests/:id', async (c) => {
         console.error('booking Zoom sync (cancelled) failed:', err),
       ),
     );
+    if (next === 'cancelled') {
+      c.executionCtx.waitUntil(
+        notifyForBooking(c.env.DB, id, 'cancelled').catch((err) =>
+          console.error('booking notify (cancelled) failed:', err),
+        ),
+      );
+    }
   }
 
   return c.json({ status: next });

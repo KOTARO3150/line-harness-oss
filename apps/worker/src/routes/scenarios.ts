@@ -42,6 +42,9 @@ function serializeScenario(row: DbScenario) {
     lineAccountId: (row as { line_account_id?: string | null }).line_account_id ?? null,
     isActive: Boolean(row.is_active),
     deliveryMode: (row.delivery_mode ?? 'relative') as DeliveryMode,
+    stopOnCustomerReply: Boolean(row.stop_on_customer_reply),
+    stopOnBooking: Boolean(row.stop_on_booking),
+    stopOnConsultation: Boolean(row.stop_on_consultation),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -243,6 +246,9 @@ scenarios.post('/api/scenarios', async (c) => {
       isActive?: boolean;
       lineAccountId?: string | null;
       deliveryMode?: string;
+      stopOnCustomerReply?: boolean;
+      stopOnBooking?: boolean;
+      stopOnConsultation?: boolean;
     }>();
 
     if (!body.name || !body.triggerType) {
@@ -274,6 +280,13 @@ scenarios.post('/api/scenarios', async (c) => {
       if (updated) scenario = updated;
     }
 
+    const stopRuleUpdate = await updateScenario(c.env.DB, scenario.id, {
+      stop_on_customer_reply: body.stopOnCustomerReply === false ? 0 : 1,
+      stop_on_booking: body.stopOnBooking === false ? 0 : 1,
+      stop_on_consultation: body.stopOnConsultation === false ? 0 : 1,
+    });
+    if (stopRuleUpdate) scenario = stopRuleUpdate;
+
     return c.json({ success: true, data: serializeScenario(scenario) }, 201);
   } catch (err) {
     console.error('POST /api/scenarios error:', err);
@@ -292,6 +305,9 @@ scenarios.put('/api/scenarios/:id', async (c) => {
       triggerTagId?: string | null;
       isActive?: boolean;
       deliveryMode?: DeliveryMode;
+      stopOnCustomerReply?: boolean;
+      stopOnBooking?: boolean;
+      stopOnConsultation?: boolean;
     }>();
 
     if (body.deliveryMode !== undefined) {
@@ -304,6 +320,9 @@ scenarios.put('/api/scenarios/:id', async (c) => {
       trigger_type: body.triggerType,
       trigger_tag_id: body.triggerTagId,
       is_active: body.isActive !== undefined ? (body.isActive ? 1 : 0) : undefined,
+      stop_on_customer_reply: body.stopOnCustomerReply !== undefined ? (body.stopOnCustomerReply ? 1 : 0) : undefined,
+      stop_on_booking: body.stopOnBooking !== undefined ? (body.stopOnBooking ? 1 : 0) : undefined,
+      stop_on_consultation: body.stopOnConsultation !== undefined ? (body.stopOnConsultation ? 1 : 0) : undefined,
     });
 
     if (!updated) {

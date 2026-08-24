@@ -8,8 +8,15 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const router = useRouter()
 
+  const restoreMobileViewport = () => {
+    // iOS Safari can leave the page panned after the software keyboard closes.
+    // Return the compact login card to its intended centered position.
+    window.setTimeout(() => window.scrollTo({ top: 0, left: 0, behavior: 'auto' }), 50)
+  }
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
+    restoreMobileViewport()
     setLoading(true)
     setError('')
 
@@ -66,8 +73,8 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: '#06C755' }}>
-      <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-sm">
+    <div className="flex min-h-[100svh] items-center justify-center overflow-hidden px-4 py-6" style={{ backgroundColor: '#06C755' }}>
+      <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl sm:p-8">
         <div className="text-center mb-6">
           <div className="w-12 h-12 rounded-xl flex items-center justify-center text-white font-bold text-lg mx-auto mb-3" style={{ backgroundColor: '#06C755' }}>
             H
@@ -83,9 +90,11 @@ export default function LoginPage() {
               type="password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
+              onBlur={restoreMobileViewport}
               placeholder="APIキーを入力"
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
-              autoFocus
+              className="w-full rounded-lg border border-gray-300 px-4 py-3 text-base focus:border-transparent focus:outline-none focus:ring-2 focus:ring-green-500"
+              autoComplete="current-password"
+              enterKeyHint="go"
             />
           </div>
 

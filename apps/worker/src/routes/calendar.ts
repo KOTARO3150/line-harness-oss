@@ -13,6 +13,7 @@ import {
   toJstString,
 } from '@line-crm/db';
 import { GoogleCalendarClient } from '../services/google-calendar.js';
+import { syncConfirmedBookingToCalendar } from '../services/booking-calendar-sync.js';
 import type { Env } from '../index.js';
 
 const calendar = new Hono<Env>();
@@ -98,7 +99,10 @@ calendar.get('/api/integrations/google-calendar/oauth/start', async (c) => {
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('scope', GOOGLE_CALENDAR_SCOPE);
   url.searchParams.set('access_type', 'offline');
-  url.searchParams.set('prompt', 'consent');
+  // Always show Google's account chooser. The account used to pay for or
+  // administer this product can be different from the account whose primary
+  // calendar receives reservations.
+  url.searchParams.set('prompt', 'select_account consent');
   url.searchParams.set('state', state);
   return c.json({ success: true, data: { authorizationUrl: url.toString() } });
 });
@@ -149,7 +153,31 @@ calendar.get('/api/integrations/google-calendar/oauth/callback', async (c) => {
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
     });
-    return c.redirect(`${state.returnTo}?calendar=connected`);
+
+    // A reservation may have been confirmed before Google Calendar was
+    // connected. Backfill future unsynced reservations after a successful
+    // connection so the operator does not need to resend LINE notifications.
+    const pending = await c.env.DB.prepare(
+      `SELECT id
+         FROM bookings
+        WHERE status = 'confirmed'
+          AND starts_at >= datetime('now')
+          AND external_event_id IS NULL
+        ORDER BY starts_at ASC
+        LIMIT 100`,
+    ).all<{ id: string }>();
+    let synced = 0;
+    for (const booking of pending.results) {
+      try {
+        // The access token was issued moments ago, so no refresh is needed for
+        // this one-time backfill.
+        const result = await syncConfirmedBookingToCalendar(c.env.DB, booking.id);
+        if (result.status === 'created') synced += 1;
+      } catch (err) {
+        console.error('Google Calendar connection backfill failed:', err);
+      }
+    }
+    return c.redirect(`${state.returnTo}?calendar=connected&synced=${synced}`);
   } catch (err) {
     console.error('Google Calendar OAuth callback failed:', err);
     return c.redirect(`${state.returnTo}?calendar=failed`);

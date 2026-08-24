@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { evaluateCondition, isSupportedConditionType, SUPPORTED_CONDITION_TYPES, processStepDeliveries, expandVariables } from './step-delivery.js';
+import { buildMessage, evaluateCondition, isSupportedConditionType, SUPPORTED_CONDITION_TYPES, processStepDeliveries, expandVariables, resolveScenarioStopReason } from './step-delivery.js';
 import type { LineClient } from '@line-crm/line-sdk';
 
 /**
@@ -51,6 +51,68 @@ describe('isSupportedConditionType', () => {
       expect(isSupportedConditionType(val)).toBe(false);
     },
   );
+});
+
+describe('resolveScenarioStopReason', () => {
+  type StopFixture = {
+    rules: { reply: number; booking: number; consultation: number };
+    reply?: boolean;
+    booking?: boolean;
+    consultation?: boolean;
+  };
+
+  function stopRuleDb(fixture: StopFixture): D1Database {
+    return {
+      prepare: (sql: string) => ({
+        bind: () => ({
+          first: async <T = unknown>(): Promise<T | null> => {
+            if (sql.includes('FROM scenarios')) {
+              return {
+                stop_on_customer_reply: fixture.rules.reply,
+                stop_on_booking: fixture.rules.booking,
+                stop_on_consultation: fixture.rules.consultation,
+              } as T;
+            }
+            if (sql.includes('FROM messages_log')) return fixture.reply ? ({ 1: 1 } as T) : null;
+            if (sql.includes('FROM bookings')) return fixture.booking ? ({ 1: 1 } as T) : null;
+            if (sql.includes('FROM consultation_records')) return fixture.consultation ? ({ 1: 1 } as T) : null;
+            return null;
+          },
+        }),
+      }),
+    } as unknown as D1Database;
+  }
+
+  const enrollment = {
+    friend_id: 'friend-1',
+    scenario_id: 'scenario-1',
+    started_at: '2026-08-14T10:00:00+09:00',
+  };
+
+  it('stops at the first customer reply after enrollment', async () => {
+    const db = stopRuleDb({ rules: { reply: 1, booking: 1, consultation: 1 }, reply: true });
+    await expect(resolveScenarioStopReason(db, enrollment)).resolves.toBe('customer_replied');
+  });
+
+  it('stops when a consultation booking was created', async () => {
+    const db = stopRuleDb({ rules: { reply: 1, booking: 1, consultation: 1 }, booking: true });
+    await expect(resolveScenarioStopReason(db, enrollment)).resolves.toBe('booking_created');
+  });
+
+  it('stops when a consultation record was created', async () => {
+    const db = stopRuleDb({ rules: { reply: 1, booking: 1, consultation: 1 }, consultation: true });
+    await expect(resolveScenarioStopReason(db, enrollment)).resolves.toBe('consultation_created');
+  });
+
+  it('does not stop for disabled rules', async () => {
+    const db = stopRuleDb({
+      rules: { reply: 0, booking: 0, consultation: 0 },
+      reply: true,
+      booking: true,
+      consultation: true,
+    });
+    await expect(resolveScenarioStopReason(db, enrollment)).resolves.toBeNull();
+  });
 });
 
 describe('evaluateCondition', () => {
@@ -432,5 +494,17 @@ describe('expandVariables comma cleanup scope', () => {
       expect(out).toBe('{"contents":[{"type":"text","text":"hello"}]}');
       expect(() => JSON.parse(out)).not.toThrow();
     });
+  });
+});
+
+describe('buildMessage text line breaks', () => {
+  it('converts escaped newline sequences into LINE line breaks', () => {
+    const message = buildMessage('text', '一行目\\n二行目\\n三行目');
+    expect(message).toEqual({ type: 'text', text: '一行目\n二行目\n三行目' });
+  });
+
+  it('keeps existing real line breaks unchanged', () => {
+    const body = '一行目\n二行目';
+    expect(buildMessage('text', body)).toEqual({ type: 'text', text: body });
   });
 });

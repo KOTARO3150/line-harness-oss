@@ -33,6 +33,7 @@ export default function InboxPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [accountOptions, setAccountOptions] = useState<AccountOption[]>([])
+  const [resolvingFriendId, setResolvingFriendId] = useState<string | null>(null)
 
   // 重複 polling で古いレスポンスが新しいデータを上書きしないように世代管理
   // (Codex Round 1 指摘: race condition)。
@@ -82,6 +83,21 @@ export default function InboxPage() {
       setError('取得に失敗しました')
     } finally {
       if (seq === requestSeqRef.current) setLoading(false)
+    }
+  }, [])
+
+  const handleResolve = useCallback(async (friendId: string) => {
+    setResolvingFriendId(friendId)
+    setError('')
+    try {
+      const res = await api.chats.update(friendId, { status: 'resolved' })
+      if (!res.success) throw new Error('update failed')
+      setAllRows((prev) => prev.filter((row) => row.friendId !== friendId))
+      setServerTotal((prev) => Math.max(0, prev - 1))
+    } catch {
+      setError('対応済みへの変更に失敗しました')
+    } finally {
+      setResolvingFriendId(null)
     }
   }, [])
 
@@ -136,8 +152,8 @@ export default function InboxPage() {
   return (
     <div className="space-y-6">
       <Header
-        title="未対応インボックス"
-        description="人間が返事してない LINE 会話の triage。auto_reply は人間の返事に数えない。"
+        title="未返信LINE"
+        description="返信が必要な会話です。会話を開いて返信するか、公式LINEですでに対応した場合は「公式LINEで対応済み」を押してください。"
       />
 
       <InboxSummaryBar
@@ -177,6 +193,8 @@ export default function InboxPage() {
         pageSize={PAGE_SIZE}
         loading={loading}
         onPageChange={setPage}
+        onResolve={handleResolve}
+        resolvingFriendId={resolvingFriendId}
       />
     </div>
   )

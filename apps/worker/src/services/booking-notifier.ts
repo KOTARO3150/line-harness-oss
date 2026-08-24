@@ -3,7 +3,9 @@ import { LineClient } from '@line-crm/line-sdk';
 export type NotificationKind =
   | 'requested'
   | 'approved'
+  | 'next_appointment'
   | 'rejected'
+  | 'cancelled'
   | 'expired'
   | 'day_before'
   | 'hours_before';
@@ -20,21 +22,34 @@ export function renderNotificationText(
   kind: NotificationKind,
   ctx: NotificationContext,
 ): string {
-  const detail = `\nメニュー: ${ctx.menuName}\n担当: ${ctx.staffName}\n日時: ${ctx.startsAtJst}`;
-  const online = ctx.joinUrl ? `\n\nオンライン相談URL:\n${ctx.joinUrl}` : '';
+  const detail = `\n\n【ご予約内容】\nご相談: ${ctx.menuName}\n担当: ${ctx.staffName}\n日時: ${ctx.startsAtJst}`;
+  const online = ctx.joinUrl
+    ? `\n\n【オンライン相談】\nお時間になりましたら、こちらからお入りください。\n${ctx.joinUrl}\n\n接続がうまくいかないときは、このLINEへそのままご連絡ください。`
+    : '';
   switch (kind) {
     case 'requested':
-      return `予約リクエストを受け付けました。${detail}\n\nお店からの返信をお待ちください。`;
+      return `ご予約のお申し込みをありがとうございます。${detail}\n\n内容を確認後、このLINEへあらためてご案内いたします。\n気になることや、先に伝えておきたいことがありましたら、このままLINEへお送りください。`;
     case 'approved':
-      return `予約が確定しました。${detail}${online}\n\n変更・キャンセルはお店に直接ご連絡ください。`;
+      return `ご予約が確定しました。${detail}${online}\n\n当日までに体調やご予定の変化がありましたら、無理をなさらず、このLINEへご連絡ください。\n落ち着いてお話しいただけるよう、こちらでも準備してお待ちしております。`;
+    case 'next_appointment': {
+      const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}:\d{2})$/.exec(ctx.startsAtJst);
+      if (!match) return `次回のご予約日\n${ctx.startsAtJst}から\nお待ちしております。`;
+      const [, year, month, day, time] = match;
+      const weekday = ['日', '月', '火', '水', '木', '金', '土'][
+        new Date(Date.UTC(Number(year), Number(month) - 1, Number(day))).getUTCDay()
+      ];
+      return `次回のご予約日\n${Number(month)}月${Number(day)}日（${weekday}）${time}から\nお待ちしております。`;
+    }
     case 'rejected':
-      return `申し訳ありません、ご希望の枠でお取りできませんでした。\n別の日時で再度お試しください。`;
+      return `せっかくお申し込みいただきましたが、ご希望の日時でのご予約をお取りすることができませんでした。\n\nお手数をおかけしますが、ご都合のよい別の日時をお選びください。\n日時選びに迷われる場合は、このLINEへそのままご相談ください。`;
+    case 'cancelled':
+      return `以下のご予約はキャンセルとなりました。${detail}\n\nまたご相談をご希望の際は、ご都合のよい時にあらためてお申し込みください。\nご不明な点がありましたら、このLINEへそのままご連絡ください。`;
     case 'expired':
-      return `予約リクエストが 24 時間返信が無かったため、期限切れになりました。${detail}`;
+      return `確認期限を過ぎたため、今回のご予約申し込みはいったん終了しました。${detail}\n\nご相談をご希望の際は、ご都合のよい時にあらためてお申し込みください。`;
     case 'day_before':
-      return `明日のご予約のお知らせです。${detail}${online}`;
+      return `明日のご予約についてのご案内です。${detail}${online}\n\n体調やご予定に変化がありましたら、このLINEへご連絡ください。`;
     case 'hours_before':
-      return `本日のご予約まであと ${ctx.hoursBefore} 時間です。${detail}${online}`;
+      return `本日のご予約時間が近づいてまいりました。${detail}${online}\n\nどうぞ慌てずにご準備ください。`;
   }
 }
 

@@ -123,6 +123,8 @@ export default function ChartDetailPage() {
   const [sendRecord, setSendRecord] = useState<ConsultationRecord | null>(null)
   const [followMessage, setFollowMessage] = useState(SAFE_FOLLOW_UP_MESSAGE)
   const [sendConfirmed, setSendConfirmed] = useState(false)
+  const [medicationStartAt, setMedicationStartAt] = useState(localDateTimeValue())
+  const [medicationFollowUpConfirmed, setMedicationFollowUpConfirmed] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -304,6 +306,25 @@ export default function ChartDetailPage() {
     } finally { setSaving(false) }
   }
 
+  const startMedicationFollowUp = async () => {
+    if (!selectedAccountId || !medicationStartAt || !medicationFollowUpConfirmed) return
+    setSaving(true); setError(''); setSaved('')
+    try {
+      await consultationChartApi.startMedicationFollowUp(
+        selectedAccountId,
+        friendId,
+        new Date(medicationStartAt).toISOString(),
+      )
+      setMedicationFollowUpConfirmed(false)
+      setSaved('服薬開始後のLINEフォローを登録しました。当日・3日後・7日後に送り、返信・予約・相談記録が入ると残りは自動停止します。')
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : ''
+      setError(message.includes('medication_follow_up_already_active')
+        ? 'このお客様には服薬後フォローがすでに進行中です。重複送信を防ぐため追加しませんでした。'
+        : '服薬後フォローを登録できませんでした。日時とLINEの登録状態を確認してください。')
+    } finally { setSaving(false) }
+  }
+
   if (loading) return <div><Header title="相談カルテ" /><div className="rounded-xl border bg-white p-10 text-center text-sm text-gray-500">読み込み中…</div></div>
 
   return (
@@ -329,6 +350,25 @@ export default function ChartDetailPage() {
           <TextArea label="基本メモ" value={chartForm.general_notes} onChange={(value) => setChartForm({ ...chartForm, general_notes: value })} />
         </div>
         <div className="mt-4 text-right"><button type="button" disabled={saving} onClick={() => void saveChart()} className="rounded-lg bg-[#06C755] px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50">{saving ? '保存中…' : '基本カルテを保存'}</button></div>
+      </section>
+
+      <section className="mt-6 rounded-xl border border-emerald-200 bg-emerald-50 p-5">
+        <h2 className="font-semibold text-emerald-950">服薬開始後のやさしいフォロー</h2>
+        <p className="mt-2 text-sm leading-6 text-emerald-900">
+          開始当日のお礼、3日後の飲みにくさ・不都合の確認、7日後の体調変化の確認をLINEで送ります。
+          お客様から返信・予約・新しい相談記録が入ると、残りは自動で止まります。
+        </p>
+        <div className="mt-4 max-w-md">
+          <Input label="お薬を始める日時" type="datetime-local" value={medicationStartAt} onChange={(value) => { setMedicationStartAt(value); setMedicationFollowUpConfirmed(false) }} />
+        </div>
+        <label className="mt-4 flex items-start gap-2 rounded-lg border border-emerald-200 bg-white p-3 text-sm text-emerald-950">
+          <input type="checkbox" checked={medicationFollowUpConfirmed} onChange={(event) => setMedicationFollowUpConfirmed(event.target.checked)} className="mt-0.5 rounded border-gray-300" />
+          <span>このお客様がお薬を始める日時であることと、当日・3日後・7日後のLINE送信を確認しました。</span>
+        </label>
+        <button type="button" disabled={saving || !detail?.chart || !medicationStartAt || !medicationFollowUpConfirmed} onClick={() => void startMedicationFollowUp()} className="mt-4 rounded-lg bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-40">
+          {saving ? '登録中…' : '当日・3日後・7日後フォローを開始'}
+        </button>
+        {!detail?.chart && <p className="mt-2 text-xs text-amber-800">先に基本カルテを保存してください。</p>}
       </section>
 
       <section className="mt-6 rounded-xl border border-gray-200 bg-white p-5">

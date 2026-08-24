@@ -43,7 +43,16 @@ export default function ChartsPage() {
       <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
         健康情報はLINEメッセージやGoogleカレンダーへ自動転記されません。必要な担当者だけがこの管理画面で確認します。
       </div>
-      <div className="mb-4 rounded-xl border border-gray-200 bg-white p-4">
+      <div className="mb-4 rounded-xl border border-violet-200 bg-gradient-to-r from-violet-50 to-white p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="font-semibold text-violet-950">ChatGPTに残っている「〜様のご相談」をカルテへ</p>
+            <p className="mt-1 text-sm text-violet-800">下でお客様を検索して開き、「ChatGPT履歴を取り込む」から相談履歴を貼り付けます。保存前に同一人物か確認できます。</p>
+          </div>
+          <a href="#chart-search" className="shrink-0 rounded-lg bg-violet-600 px-4 py-2 text-center text-sm font-semibold text-white hover:bg-violet-700">お客様を検索する</a>
+        </div>
+      </div>
+      <div id="chart-search" className="mb-4 scroll-mt-4 rounded-xl border border-gray-200 bg-white p-4">
         <div className="flex gap-2">
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="LINE表示名・氏名・ふりがなで検索" className="min-w-0 flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm" />
           <button type="button" onClick={() => void load()} className="rounded-lg bg-[#06C755] px-4 py-2 text-sm font-semibold text-white">検索</button>
@@ -80,7 +89,7 @@ export default function ChartsPage() {
                   {item.tags.length > 3 && <span className="text-[11px] text-gray-400">+{item.tags.length - 3}</span>}
                 </div>
               </div>
-              <span className={`rounded-full px-2.5 py-1 text-xs ${item.chart_id ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>{item.chart_id ? 'カルテあり' : '未作成'}</span>
+              <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${item.chart_id ? 'bg-green-100 text-green-700' : 'bg-violet-100 text-violet-700'}`}>{item.chart_id ? 'カルテを開く' : 'カルテを作る'}</span>
             </Link>
           ))}
           {items.length === 0 && <div className="p-10 text-center text-sm text-gray-500">該当するお客様はいません。</div>}

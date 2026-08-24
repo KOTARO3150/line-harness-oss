@@ -54,6 +54,7 @@ type ChatLike = {
   status: string;
   notes: string | null;
   last_message_at: string | null;
+  mark_as_read_token: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -120,6 +121,27 @@ async function resolveFriendAndAccessToken(
   }
 
   return { friend, accessToken: account.channel_access_token };
+}
+
+async function markChatReadOnLine(
+  db: D1Database,
+  chat: ChatLike,
+  defaultAccessToken: string,
+): Promise<boolean> {
+  if (!chat.mark_as_read_token) return false;
+
+  const { friend, accessToken } = await resolveFriendAndAccessToken(
+    db,
+    chat.friend_id,
+    defaultAccessToken,
+  );
+  if (!friend) return false;
+
+  const { LineClient } = await import('@line-crm/line-sdk');
+  const lineClient = new LineClient(accessToken);
+  await lineClient.markMessagesAsRead(chat.mark_as_read_token);
+  await updateChat(db, chat.id, { markAsReadToken: null });
+  return true;
 }
 
 // ========== オペレーターCRUD ==========
@@ -298,7 +320,7 @@ chats.get('/api/chats', async (c) => {
       any_agg AS (
         SELECT friend_id,
           CASE WHEN message_type = 'text' THEN SUBSTR(content, 1, 200) ELSE NULL END AS content,
-          direction, message_type,
+          direction, message_type, source,
           MAX(created_at) AS created_at
         FROM messages_log
         WHERE (delivery_type IS NULL OR delivery_type != 'test')
@@ -308,10 +330,11 @@ chats.get('/api/chats', async (c) => {
       in_agg AS (
         SELECT friend_id,
           CASE WHEN message_type = 'text' THEN SUBSTR(content, 1, 200) ELSE NULL END AS content,
-          message_type,
+          message_type, source,
           MAX(created_at) AS created_at
         FROM messages_log
         WHERE direction = 'incoming'
+          AND (source IS NULL OR source != 'postback')
           AND (delivery_type IS NULL OR delivery_type != 'test')
           AND friend_id IN (SELECT friend_id FROM page)
         GROUP BY friend_id
@@ -321,6 +344,7 @@ chats.get('/api/chats', async (c) => {
           COALESCE(i.content, a.content) AS content,
           CASE WHEN i.friend_id IS NOT NULL THEN 'incoming' ELSE a.direction END AS direction,
           COALESCE(i.message_type, a.message_type) AS message_type,
+          CASE WHEN i.friend_id IS NOT NULL THEN i.source ELSE a.source END AS source,
           COALESCE(i.created_at, a.created_at) AS preview_at
         FROM any_agg a
         LEFT JOIN in_agg i ON i.friend_id = a.friend_id
@@ -339,6 +363,7 @@ chats.get('/api/chats', async (c) => {
         rm.content AS last_message_content,
         rm.direction AS last_message_direction,
         rm.message_type AS last_message_type,
+        rm.source AS last_message_source,
         COALESCE(c.created_at, d.last_message_at) AS created_at,
         COALESCE(c.updated_at, d.last_message_at) AS updated_at
       FROM page d
@@ -372,6 +397,7 @@ chats.get('/api/chats', async (c) => {
       lastMessageContent: ch.last_message_content || null,
       lastMessageDirection: ch.last_message_direction || null,
       lastMessageType: ch.last_message_type || null,
+      lastMessageSource: ch.last_message_source || null,
       createdAt: ch.created_at,
       updatedAt: ch.updated_at,
     }));
@@ -388,6 +414,7 @@ chats.get('/api/chats', async (c) => {
             lastMessageContent: u.lastIncomingType === 'text' ? u.lastIncomingContent : null,
             lastMessageDirection: 'incoming' as const,
             lastMessageType: u.lastIncomingType,
+            lastMessageSource: null,
           };
         })
         // 上書きで lastMessageAt が変わったので resort
@@ -447,7 +474,7 @@ chats.get('/api/chats/:id', async (c) => {
     // 現状の最重量ユーザー(481件)の2倍バッファ。これ以上の履歴はページング未実装（Phase 2 TODO）。
     const messages = await c.env.DB
       .prepare(
-        `SELECT id, friend_id, direction, message_type, content, created_at
+        `SELECT id, friend_id, direction, message_type, content, source, created_at
          FROM messages_log
          WHERE friend_id = ? AND (delivery_type IS NULL OR delivery_type != 'test')
          ORDER BY created_at DESC LIMIT 1000`,
@@ -473,6 +500,7 @@ chats.get('/api/chats/:id', async (c) => {
           direction: m.direction,
           messageType: m.message_type,
           content: m.content,
+          source: m.source ?? null,
           createdAt: m.created_at,
         })),
       },
@@ -500,6 +528,96 @@ chats.post('/api/chats', async (c) => {
   }
 });
 
+// 一覧で選択した未読チャットをまとめて解決済みにする。
+// LINEへの送信やメッセージ履歴の削除は行わず、管理画面上の対応状態だけを更新する。
+chats.post('/api/chats/bulk-resolve', async (c) => {
+  try {
+    const body = await c.req.json<{ ids?: unknown }>();
+    if (!Array.isArray(body.ids)) {
+      return c.json({ success: false, error: 'ids must be an array' }, 400);
+    }
+
+    const ids = [...new Set(
+      body.ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0),
+    )];
+    if (ids.length === 0) {
+      return c.json({ success: false, error: 'Select at least one chat' }, 400);
+    }
+    if (ids.length > 200) {
+      return c.json({ success: false, error: 'Up to 200 chats can be updated at once' }, 400);
+    }
+
+    const resolvedChats: ChatLike[] = [];
+    for (const id of ids) {
+      const chat = await resolveOrCreateChat(c.env.DB, id);
+      if (chat) resolvedChats.push(chat);
+    }
+    if (resolvedChats.length === 0) {
+      return c.json({ success: false, error: 'Chats not found' }, 404);
+    }
+
+    const now = jstNow();
+    await c.env.DB.batch(
+      resolvedChats.map((chat) => c.env.DB
+        .prepare(`UPDATE chats SET status = 'resolved', updated_at = ? WHERE id = ?`)
+        .bind(now, chat.id)),
+    );
+
+    return c.json({ success: true, data: { updated: resolvedChats.length } });
+  } catch (err) {
+    console.error('POST /api/chats/bulk-resolve error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// 一覧で選択したチャットの管理状態をまとめて更新する。
+// in_progress は「内容を確認したが次の作業は残っている」、resolved は「対応完了」。
+// LINE送信や履歴の削除は行わない。
+chats.post('/api/chats/bulk-status', async (c) => {
+  try {
+    const body = await c.req.json<{ ids?: unknown; status?: unknown }>();
+    if (!Array.isArray(body.ids)) {
+      return c.json({ success: false, error: 'ids must be an array' }, 400);
+    }
+    if (body.status !== 'in_progress' && body.status !== 'resolved') {
+      return c.json({ success: false, error: 'status must be in_progress or resolved' }, 400);
+    }
+
+    const ids = [...new Set(
+      body.ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0),
+    )];
+    if (ids.length === 0) {
+      return c.json({ success: false, error: 'Select at least one chat' }, 400);
+    }
+    if (ids.length > 300) {
+      return c.json({ success: false, error: 'Up to 300 chats can be updated at once' }, 400);
+    }
+
+    const targetChats: ChatLike[] = [];
+    for (const id of ids) {
+      const chat = await resolveOrCreateChat(c.env.DB, id);
+      if (chat) targetChats.push(chat);
+    }
+    if (targetChats.length === 0) {
+      return c.json({ success: false, error: 'Chats not found' }, 404);
+    }
+
+    const now = jstNow();
+    for (let offset = 0; offset < targetChats.length; offset += 50) {
+      await c.env.DB.batch(
+        targetChats.slice(offset, offset + 50).map((chat) => c.env.DB
+          .prepare(`UPDATE chats SET status = ?, updated_at = ? WHERE id = ?`)
+          .bind(body.status, now, chat.id)),
+      );
+    }
+
+    return c.json({ success: true, data: { updated: targetChats.length, status: body.status } });
+  } catch (err) {
+    console.error('POST /api/chats/bulk-status error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 // チャットのアサイン/ステータス更新/ノート更新
 chats.put('/api/chats/:id', async (c) => {
   try {
@@ -518,6 +636,26 @@ chats.put('/api/chats/:id', async (c) => {
   } catch (err) {
     console.error('PUT /api/chats/:id error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// 管理画面で会話を開いたとき、LINE Official Account Manager 側にも既読を付ける。
+// 「返信済み」とは別概念なので chat.status は変更しない。
+chats.post('/api/chats/:id/read', async (c) => {
+  try {
+    const chat = await resolveOrCreateChat(c.env.DB, c.req.param('id'));
+    if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
+
+    const marked = await markChatReadOnLine(
+      c.env.DB,
+      chat,
+      c.env.LINE_CHANNEL_ACCESS_TOKEN,
+    );
+    return c.json({ success: true, data: { marked } });
+  } catch (err) {
+    console.error('POST /api/chats/:id/read error:', err);
+    const message = err instanceof Error ? err.message : 'Internal server error';
+    return c.json({ success: false, error: message }, 502);
   }
 });
 
@@ -604,8 +742,14 @@ chats.post('/api/chats/:id/send', async (c) => {
       .bind(logId, friend.id, messageType, body.content, jstNow())
       .run();
 
-    // チャットの最終メッセージ日時を更新（chat.id を直接使う — friend_id で呼ばれても resolveOrCreateChat 済み）
-    await updateChat(c.env.DB, chat.id, { status: 'in_progress', lastMessageAt: jstNow() });
+    // 返信に成功したら未返信対応は完了。公式LINE側の既読も可能なら同期する。
+    try {
+      await markChatReadOnLine(c.env.DB, chat, c.env.LINE_CHANNEL_ACCESS_TOKEN);
+    } catch (err) {
+      // 返信自体は成功しているため、既読同期だけの失敗で 500 を返さない。
+      console.error('[chat-send] Failed to sync read state to LINE', err);
+    }
+    await updateChat(c.env.DB, chat.id, { status: 'resolved', lastMessageAt: jstNow() });
 
     return c.json({ success: true, data: { sent: true, messageId: logId } });
   } catch (err) {

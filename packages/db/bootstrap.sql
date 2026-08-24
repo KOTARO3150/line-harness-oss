@@ -256,9 +256,59 @@ CREATE TABLE chats (
   status        TEXT NOT NULL DEFAULT 'unread' CHECK (status IN ('unread', 'in_progress', 'resolved')),
   notes         TEXT,
   last_message_at TEXT,
+  mark_as_read_token TEXT,
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 , line_account_id TEXT);
+
+CREATE TABLE consultation_audit_logs (
+  id TEXT PRIMARY KEY,
+  line_account_id TEXT NOT NULL,
+  chart_id TEXT,
+  friend_id TEXT NOT NULL,
+  staff_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE consultation_charts (
+  id TEXT PRIMARY KEY,
+  line_account_id TEXT NOT NULL,
+  friend_id TEXT NOT NULL UNIQUE,
+  customer_name TEXT,
+  customer_name_kana TEXT,
+  birth_date TEXT,
+  phone TEXT,
+  allergies TEXT,
+  current_medications TEXT,
+  safety_notes TEXT,
+  general_notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id),
+  FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE
+);
+
+CREATE TABLE consultation_records (
+  id TEXT PRIMARY KEY,
+  chart_id TEXT NOT NULL,
+  consultation_at TEXT NOT NULL,
+  consultation_type TEXT NOT NULL DEFAULT 'in_person',
+  chief_complaint TEXT,
+  observations TEXT,
+  recommendation TEXT,
+  products TEXT,
+  usage_instructions TEXT,
+  follow_up_plan TEXT,
+  follow_up_due_date TEXT,
+  follow_up_completed_at TEXT,
+  follow_up_last_sent_at TEXT,
+  source_form_submission_id TEXT UNIQUE,
+  created_by_staff_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (chart_id) REFERENCES consultation_charts(id) ON DELETE CASCADE
+);
 
 CREATE TABLE conversion_events (
   id                   TEXT PRIMARY KEY,
@@ -379,6 +429,23 @@ CREATE TABLE events (
   FOREIGN KEY (line_account_id) REFERENCES line_accounts(id)
 );
 
+CREATE TABLE external_bookings (
+  id TEXT PRIMARY KEY,
+  line_account_id TEXT NOT NULL,
+  friend_id TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'proline',
+  starts_at TEXT NOT NULL,
+  ends_at TEXT,
+  status TEXT NOT NULL CHECK (status IN ('scheduled', 'cancelled', 'completed')),
+  menu_name TEXT,
+  created_by_staff_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id),
+  FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE,
+  UNIQUE (line_account_id, friend_id, provider, starts_at)
+);
+
 CREATE TABLE form_opens (
   id TEXT PRIMARY KEY,
   form_id TEXT NOT NULL,
@@ -436,7 +503,7 @@ CREATE TABLE "friend_scenarios" (
   started_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   next_delivery_at   TEXT,
   updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+, completion_reason TEXT);
 
 CREATE TABLE friend_scores (
   id              TEXT PRIMARY KEY,
@@ -595,6 +662,82 @@ CREATE TABLE operators (
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE order_edit_history (
+  id          TEXT PRIMARY KEY,
+  order_id    TEXT NOT NULL,
+  staff_id    TEXT NOT NULL,
+  before_json TEXT NOT NULL,
+  after_json  TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+);
+
+CREATE TABLE order_items (
+  id          TEXT PRIMARY KEY,
+  order_id    TEXT NOT NULL,
+  item_name   TEXT NOT NULL,
+  quantity    INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+  unit_price  INTEGER CHECK (unit_price IS NULL OR unit_price >= 0),
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL, quantity_unit TEXT NOT NULL DEFAULT '個',
+  FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+);
+
+CREATE TABLE order_lifecycle_history (
+  id                    TEXT PRIMARY KEY,
+  order_id              TEXT NOT NULL,
+  from_lifecycle_status TEXT NOT NULL,
+  to_lifecycle_status   TEXT NOT NULL,
+  refund_type           TEXT NOT NULL,
+  refund_status         TEXT NOT NULL,
+  refund_amount         INTEGER,
+  reason                TEXT NOT NULL,
+  staff_id              TEXT NOT NULL,
+  created_at            TEXT NOT NULL,
+  FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+);
+
+CREATE TABLE order_status_history (
+  id          TEXT PRIMARY KEY,
+  order_id    TEXT NOT NULL,
+  from_status TEXT CHECK (from_status IS NULL OR from_status IN ('unconfirmed','preparing','ready_to_ship','shipped')),
+  to_status   TEXT NOT NULL CHECK (to_status IN ('unconfirmed','preparing','ready_to_ship','shipped')),
+  staff_id    TEXT NOT NULL,
+  note        TEXT,
+  created_at  TEXT NOT NULL,
+  FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+);
+
+CREATE TABLE orders (
+  id                     TEXT PRIMARY KEY,
+  line_account_id        TEXT NOT NULL,
+  friend_id              TEXT,
+  status                 TEXT NOT NULL DEFAULT 'unconfirmed'
+                           CHECK (status IN ('unconfirmed','preparing','ready_to_ship','shipped')),
+  source                 TEXT NOT NULL DEFAULT 'line'
+                           CHECK (source IN ('line','phone','store','other')),
+  customer_name_snapshot TEXT NOT NULL,
+  shipping_method        TEXT,
+  carrier                TEXT,
+  tracking_number        TEXT,
+  note                   TEXT,
+  preparing_at           TEXT,
+  ready_to_ship_at       TEXT,
+  shipped_at             TEXT,
+  created_by_staff_id    TEXT NOT NULL,
+  updated_by_staff_id    TEXT NOT NULL,
+  created_at             TEXT NOT NULL,
+  updated_at             TEXT NOT NULL, lifecycle_status TEXT NOT NULL DEFAULT 'active'
+  CHECK (lifecycle_status IN ('active','cancelled','voided','returned')), lifecycle_reason TEXT, lifecycle_at TEXT, lifecycle_by_staff_id TEXT, refund_type TEXT NOT NULL DEFAULT 'none'
+  CHECK (refund_type IN ('none','partial','full')), refund_status TEXT NOT NULL DEFAULT 'not_required'
+  CHECK (refund_status IN ('not_required','pending','completed')), refund_amount INTEGER
+  CHECK (refund_amount IS NULL OR refund_amount >= 0), refund_processed_at TEXT, expected_delivery_date TEXT, delivery_time_slot TEXT, delivery_instruction TEXT, shipping_notification_status TEXT NOT NULL DEFAULT 'not_sent'
+  CHECK (shipping_notification_status IN ('not_sent', 'sent', 'failed', 'not_applicable')), shipping_notification_sent_at TEXT, shipping_notification_error TEXT, shipping_notification_text TEXT,
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id) ON DELETE CASCADE,
+  FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE SET NULL
+);
+
 CREATE TABLE outgoing_webhooks (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
@@ -709,7 +852,7 @@ CREATE TABLE scenarios (
   delivery_mode   TEXT NOT NULL DEFAULT 'relative' CHECK (delivery_mode IN ('relative', 'elapsed', 'absolute_time')),
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-, line_account_id TEXT);
+, line_account_id TEXT, stop_on_customer_reply INTEGER NOT NULL DEFAULT 1, stop_on_booking INTEGER NOT NULL DEFAULT 1, stop_on_consultation INTEGER NOT NULL DEFAULT 1);
 
 CREATE TABLE scoring_rules (
   id          TEXT PRIMARY KEY,
@@ -747,7 +890,7 @@ CREATE TABLE staff_members (
   is_active  INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+, api_key_hash TEXT, api_key_hint TEXT);
 
 CREATE TABLE staff_menus (
   staff_id                  TEXT NOT NULL,
@@ -848,6 +991,22 @@ CREATE TABLE users (
   updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE video_library_items (
+  id                TEXT PRIMARY KEY,
+  line_account_id   TEXT NOT NULL,
+  title             TEXT NOT NULL,
+  description       TEXT,
+  category          TEXT NOT NULL DEFAULT 'お悩み別',
+  video_url         TEXT NOT NULL,
+  thumbnail_url     TEXT,
+  sort_order        INTEGER NOT NULL DEFAULT 0,
+  is_featured       INTEGER NOT NULL DEFAULT 0,
+  is_active         INTEGER NOT NULL DEFAULT 1,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id) ON DELETE CASCADE
+);
+
 CREATE INDEX idx_ad_conversion_logs_friend ON ad_conversion_logs (friend_id);
 
 CREATE INDEX idx_ad_conversion_logs_platform ON ad_conversion_logs (ad_platform_id);
@@ -873,6 +1032,7 @@ CREATE INDEX idx_automations_event ON automations (event_type);
 CREATE INDEX idx_bookings_account_status_starts ON bookings (line_account_id, status, starts_at);
 
 CREATE INDEX idx_bookings_friend_starts ON bookings (friend_id, starts_at DESC);
+
 CREATE INDEX idx_bookings_payment_status ON bookings (line_account_id, payment_status, starts_at);
 
 CREATE INDEX idx_bookings_staff_overlap ON bookings (staff_id, status, starts_at, block_ends_at);
@@ -892,6 +1052,14 @@ CREATE UNIQUE INDEX idx_chats_friend_unique ON chats (friend_id);
 CREATE INDEX idx_chats_operator ON chats (operator_id);
 
 CREATE INDEX idx_chats_status ON chats (status);
+
+CREATE INDEX idx_consultation_audit_chart ON consultation_audit_logs (chart_id, created_at DESC);
+
+CREATE INDEX idx_consultation_charts_account ON consultation_charts (line_account_id, updated_at DESC);
+
+CREATE INDEX idx_consultation_records_chart ON consultation_records (chart_id, consultation_at DESC);
+
+CREATE INDEX idx_consultation_records_follow_up_due ON consultation_records (follow_up_due_date, follow_up_completed_at);
 
 CREATE INDEX idx_conversion_events_affiliate ON conversion_events (affiliate_code);
 
@@ -919,6 +1087,10 @@ CREATE INDEX idx_event_bookings_slot_status ON event_bookings (slot_id, status);
 CREATE INDEX idx_event_slots_event_starts ON event_slots (event_id, starts_at);
 
 CREATE INDEX idx_events_account_published_sort ON events (line_account_id, is_published, sort_order);
+
+CREATE INDEX idx_external_bookings_account_status_starts ON external_bookings (line_account_id, status, starts_at);
+
+CREATE INDEX idx_external_bookings_friend_starts ON external_bookings (friend_id, starts_at DESC);
 
 CREATE INDEX idx_form_opens_form ON form_opens (form_id, opened_at);
 
@@ -977,6 +1149,27 @@ CREATE INDEX idx_notifications_created ON notifications (created_at);
 
 CREATE INDEX idx_notifications_status ON notifications (status);
 
+CREATE INDEX idx_order_edit_history_order_created
+  ON order_edit_history (order_id, created_at DESC);
+
+CREATE INDEX idx_order_items_order_sort
+  ON order_items (order_id, sort_order);
+
+CREATE INDEX idx_order_lifecycle_history_order_created
+  ON order_lifecycle_history (order_id, created_at DESC);
+
+CREATE INDEX idx_order_status_history_order_created
+  ON order_status_history (order_id, created_at DESC);
+
+CREATE INDEX idx_orders_account_lifecycle_updated
+  ON orders (line_account_id, lifecycle_status, updated_at DESC);
+
+CREATE INDEX idx_orders_account_status_updated
+  ON orders (line_account_id, status, updated_at DESC);
+
+CREATE INDEX idx_orders_friend_updated
+  ON orders (friend_id, updated_at DESC);
+
 CREATE INDEX idx_ref_tracking_friend ON ref_tracking (friend_id);
 
 CREATE INDEX idx_ref_tracking_friend_created ON ref_tracking(friend_id, created_at);
@@ -1003,6 +1196,10 @@ CREATE INDEX idx_staff_account_sort ON staff (line_account_id, sort_order);
 
 CREATE UNIQUE INDEX idx_staff_members_api_key ON staff_members(api_key);
 
+CREATE UNIQUE INDEX idx_staff_members_api_key_hash
+  ON staff_members(api_key_hash)
+  WHERE api_key_hash IS NOT NULL;
+
 CREATE INDEX idx_staff_members_role ON staff_members(role);
 
 CREATE INDEX idx_stripe_events_friend ON stripe_events (friend_id);
@@ -1022,40 +1219,5 @@ CREATE INDEX idx_users_external_id ON users (external_id);
 
 CREATE INDEX idx_users_phone ON users (phone);
 
-CREATE TABLE consultation_charts (
-  id TEXT PRIMARY KEY, line_account_id TEXT NOT NULL, friend_id TEXT NOT NULL UNIQUE,
-  customer_name TEXT, customer_name_kana TEXT, birth_date TEXT, phone TEXT,
-  allergies TEXT, current_medications TEXT, safety_notes TEXT, general_notes TEXT,
-  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id),
-  FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE
-);
-CREATE INDEX idx_consultation_charts_account ON consultation_charts (line_account_id, updated_at DESC);
-CREATE TABLE consultation_records (
-  id TEXT PRIMARY KEY, chart_id TEXT NOT NULL, consultation_at TEXT NOT NULL,
-  consultation_type TEXT NOT NULL DEFAULT 'in_person', chief_complaint TEXT,
-  observations TEXT, recommendation TEXT, products TEXT, usage_instructions TEXT,
-  follow_up_plan TEXT, follow_up_due_date TEXT, follow_up_completed_at TEXT, follow_up_last_sent_at TEXT, source_form_submission_id TEXT UNIQUE,
-  created_by_staff_id TEXT NOT NULL, created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY (chart_id) REFERENCES consultation_charts(id) ON DELETE CASCADE
-);
-CREATE INDEX idx_consultation_records_chart ON consultation_records (chart_id, consultation_at DESC);
-CREATE INDEX idx_consultation_records_follow_up_due ON consultation_records (follow_up_due_date, follow_up_completed_at);
-CREATE TABLE consultation_audit_logs (
-  id TEXT PRIMARY KEY, line_account_id TEXT NOT NULL, chart_id TEXT,
-  friend_id TEXT NOT NULL, staff_id TEXT NOT NULL, action TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX idx_consultation_audit_chart ON consultation_audit_logs (chart_id, created_at DESC);
-CREATE TABLE external_bookings (
-  id TEXT PRIMARY KEY, line_account_id TEXT NOT NULL, friend_id TEXT NOT NULL,
-  provider TEXT NOT NULL DEFAULT 'proline', starts_at TEXT NOT NULL, ends_at TEXT,
-  status TEXT NOT NULL CHECK (status IN ('scheduled', 'cancelled', 'completed')),
-  menu_name TEXT, created_by_staff_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-  FOREIGN KEY (line_account_id) REFERENCES line_accounts(id),
-  FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE CASCADE,
-  UNIQUE (line_account_id, friend_id, provider, starts_at)
-);
-CREATE INDEX idx_external_bookings_friend_starts ON external_bookings (friend_id, starts_at DESC);
-CREATE INDEX idx_external_bookings_account_status_starts ON external_bookings (line_account_id, status, starts_at);
+CREATE INDEX idx_video_library_account_sort
+  ON video_library_items (line_account_id, is_active, sort_order, created_at);

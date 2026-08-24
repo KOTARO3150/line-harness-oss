@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import Header from '@/components/layout/header'
 import { api, bookingApi, type BookingMenu } from '@/lib/api'
+import { publicWorkerUrl } from '@/lib/public-worker-url'
 import type { Tag } from '@line-crm/shared'
 import { useAccount } from '@/contexts/account-context'
 
@@ -34,7 +35,7 @@ export default function MenusPage() {
   const [tags, setTags] = useState<Tag[]>([])
 
   const liffId = selectedAccount?.liffId ?? null
-  const workerBase = process.env.NEXT_PUBLIC_API_URL ?? ''
+  const workerBase = publicWorkerUrl()
 
   async function copyMenuUrl(menuId: string) {
     if (!workerBase || !liffId) return

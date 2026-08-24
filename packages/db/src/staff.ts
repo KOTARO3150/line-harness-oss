@@ -6,6 +6,8 @@ export interface StaffMember {
   email: string | null;
   role: 'owner' | 'admin' | 'staff';
   api_key: string;
+  api_key_hash: string | null;
+  api_key_hint: string | null;
   is_active: number;
   created_at: string;
   updated_at: string;
@@ -31,14 +33,55 @@ function generateApiKey(): string {
   return `lh_${hex}`;
 }
 
+async function hashApiKey(apiKey: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(apiKey));
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function apiKeyHint(apiKey: string): string {
+  return apiKey.slice(-4);
+}
+
+function retiredApiKeyValue(): string {
+  return `retired_${crypto.randomUUID()}`;
+}
+
 export async function getStaffByApiKey(
   db: D1Database,
   apiKey: string,
 ): Promise<StaffMember | null> {
-  return db
+  const hash = await hashApiKey(apiKey);
+  const hashed = await db
+    .prepare('SELECT * FROM staff_members WHERE api_key_hash = ? AND is_active = 1')
+    .bind(hash)
+    .first<StaffMember>();
+  if (hashed) return hashed;
+
+  // 段階移行: 旧バージョンで平文保存されたキーは、最初の正常ログイン時だけ
+  // 旧列で照合し、その場でハッシュへ移して平文を破棄する。
+  const legacy = await db
     .prepare('SELECT * FROM staff_members WHERE api_key = ? AND is_active = 1')
     .bind(apiKey)
     .first<StaffMember>();
+  if (!legacy) return null;
+
+  await db
+    .prepare(
+      `UPDATE staff_members
+          SET api_key_hash = ?, api_key_hint = ?, api_key = ?, updated_at = ?
+        WHERE id = ? AND api_key = ?`,
+    )
+    .bind(hash, apiKeyHint(apiKey), retiredApiKeyValue(), jstNow(), legacy.id, apiKey)
+    .run();
+
+  return {
+    ...legacy,
+    api_key: '',
+    api_key_hash: hash,
+    api_key_hint: apiKeyHint(apiKey),
+  };
 }
 
 export async function getStaffMembers(db: D1Database): Promise<StaffMember[]> {
@@ -65,19 +108,23 @@ export async function createStaffMember(
   const id = crypto.randomUUID();
   const now = jstNow();
   const apiKey = generateApiKey();
+  const hash = await hashApiKey(apiKey);
 
   await db
     .prepare(
-      `INSERT INTO staff_members (id, name, email, role, api_key, is_active, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+      `INSERT INTO staff_members
+         (id, name, email, role, api_key, api_key_hash, api_key_hint, is_active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
     )
-    .bind(id, input.name, input.email ?? null, input.role, apiKey, now, now)
+    .bind(id, input.name, input.email ?? null, input.role, retiredApiKeyValue(), hash, apiKeyHint(apiKey), now, now)
     .run();
 
-  return (await db
+  const created = (await db
     .prepare('SELECT * FROM staff_members WHERE id = ?')
     .bind(id)
     .first<StaffMember>())!;
+  // 生のキーを返すのは作成直後の一度だけ。DBには保存しない。
+  return { ...created, api_key: apiKey };
 }
 
 export async function updateStaffMember(
@@ -109,10 +156,15 @@ export async function deleteStaffMember(db: D1Database, id: string): Promise<voi
 
 export async function regenerateStaffApiKey(db: D1Database, id: string): Promise<string> {
   const newKey = generateApiKey();
+  const hash = await hashApiKey(newKey);
   const now = jstNow();
   const result = await db
-    .prepare('UPDATE staff_members SET api_key = ?, updated_at = ? WHERE id = ?')
-    .bind(newKey, now, id)
+    .prepare(
+      `UPDATE staff_members
+          SET api_key = ?, api_key_hash = ?, api_key_hint = ?, updated_at = ?
+        WHERE id = ?`,
+    )
+    .bind(retiredApiKeyValue(), hash, apiKeyHint(newKey), now, id)
     .run();
   if (result.meta.changes === 0) {
     throw new Error(`Staff member not found: ${id}`);

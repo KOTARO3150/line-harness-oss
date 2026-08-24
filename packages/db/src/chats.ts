@@ -18,6 +18,7 @@ export interface ChatRow {
   status: string;
   notes: string | null;
   last_message_at: string | null;
+  mark_as_read_token: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -116,7 +117,7 @@ export async function createChat(
 export async function updateChat(
   db: D1Database,
   id: string,
-  updates: Partial<{ operatorId: string | null; status: string; notes: string; lastMessageAt: string }>,
+  updates: Partial<{ operatorId: string | null; status: string; notes: string; lastMessageAt: string; markAsReadToken: string | null }>,
 ): Promise<void> {
   const sets: string[] = [];
   const values: unknown[] = [];
@@ -124,6 +125,7 @@ export async function updateChat(
   if (updates.status !== undefined) { sets.push('status = ?'); values.push(updates.status); }
   if (updates.notes !== undefined) { sets.push('notes = ?'); values.push(updates.notes); }
   if (updates.lastMessageAt !== undefined) { sets.push('last_message_at = ?'); values.push(updates.lastMessageAt); }
+  if (updates.markAsReadToken !== undefined) { sets.push('mark_as_read_token = ?'); values.push(updates.markAsReadToken); }
   if (sets.length === 0) return;
   sets.push('updated_at = ?');
   values.push(jstNow());
@@ -132,13 +134,21 @@ export async function updateChat(
 }
 
 /** 友だちからメッセージ受信時にチャットを作成/更新 */
-export async function upsertChatOnMessage(db: D1Database, friendId: string): Promise<ChatRow> {
+export async function upsertChatOnMessage(
+  db: D1Database,
+  friendId: string,
+  markAsReadToken?: string,
+): Promise<ChatRow> {
   const now = jstNow();
   // createChat はレースで負けた場合も相手が作った行を返すので、必ずその行に対して
   // 受信時の更新 (resolved→unread, last_message_at) を適用する。挿入直後の自行にも
   // 適用されるが no-op 相当なので害はない。
   const chat = (await getChatByFriendId(db, friendId)) ?? (await createChat(db, { friendId }));
   const newStatus = chat.status === 'resolved' ? 'unread' : chat.status;
-  await updateChat(db, chat.id, { status: newStatus, lastMessageAt: now });
+  await updateChat(db, chat.id, {
+    status: newStatus,
+    lastMessageAt: now,
+    ...(markAsReadToken ? { markAsReadToken } : {}),
+  });
   return (await getChatById(db, chat.id))!;
 }

@@ -133,6 +133,12 @@ export interface Scenario {
   isActive: boolean;
   /** 配信モード (作成後の変更不可)。レスポンスでは常にセット、Create リクエストでは省略可 (default: 'relative') */
   deliveryMode?: DeliveryMode;
+  /** お客様から返信があったら残りの自動配信を止める */
+  stopOnCustomerReply?: boolean;
+  /** 予約が入ったら残りの自動配信を止める */
+  stopOnBooking?: boolean;
+  /** 相談カルテが作成されたら残りの自動配信を止める */
+  stopOnConsultation?: boolean;
   /** 作成日時 (ISO 8601) */
   createdAt: string;
   /** 更新日時 (ISO 8601) */

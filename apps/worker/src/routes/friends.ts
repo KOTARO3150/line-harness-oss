@@ -521,13 +521,13 @@ friends.get('/api/friends/:id/messages', async (c) => {
     // same history across DirectMessagePanel and the chat panel.
     const result = await c.env.DB
       .prepare(
-        `SELECT id, direction, message_type as messageType, content, created_at as createdAt
+        `SELECT id, direction, message_type as messageType, content, source, created_at as createdAt
          FROM messages_log WHERE friend_id = ?
            AND (delivery_type IS NULL OR delivery_type != 'test')
          ORDER BY created_at DESC LIMIT 200`,
       )
       .bind(friendId)
-      .all<{ id: string; direction: string; messageType: string; content: string; createdAt: string }>();
+      .all<{ id: string; direction: string; messageType: string; content: string; source: string | null; createdAt: string }>();
     return c.json({ success: true, data: result.results.reverse() });
   } catch (err) {
     console.error('GET /api/friends/:id/messages error:', err);

@@ -6,7 +6,7 @@ import Header from '@/components/layout/header'
 import { api, fetchApi, type FriendListItem } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 
-type FieldType = 'text' | 'tel' | 'email' | 'number' | 'textarea' | 'date'
+type FieldType = 'text' | 'tel' | 'email' | 'number' | 'textarea' | 'date' | 'select' | 'radio'
 type ChartTarget = '' | 'customer_name' | 'customer_name_kana' | 'birth_date' | 'phone' | 'allergies' | 'current_medications' | 'safety_notes' | 'general_notes' | 'chief_complaint' | 'observations' | 'recommendation' | 'products' | 'usage_instructions' | 'follow_up_plan'
 type TagRuleOperator = 'equals' | 'contains' | 'not_empty'
 
@@ -22,6 +22,7 @@ interface FormField {
   type: FieldType
   required: boolean
   placeholder?: string
+  options?: string[]
   chartTarget?: ChartTarget
   tagRules?: TagRule[]
 }
@@ -38,8 +39,10 @@ interface HarnessForm {
 
 const initialFields: FormField[] = [
   { name: 'full_name', label: 'お名前', type: 'text', required: true, placeholder: '山田 太郎', chartTarget: 'customer_name' },
-  { name: 'phone', label: '電話番号', type: 'tel', required: false, chartTarget: 'phone' },
-  { name: 'consultation', label: 'ご相談内容', type: 'textarea', required: true, chartTarget: 'chief_complaint' },
+  { name: 'birth_date', label: '生年月日', type: 'date', required: true, chartTarget: 'birth_date' },
+  { name: 'consultation', label: '今いちばん気になっていること', type: 'textarea', required: true, placeholder: 'うまくまとまっていなくても大丈夫です。', chartTarget: 'chief_complaint' },
+  { name: 'consultation_method', label: 'ご希望の相談方法', type: 'radio', required: true, options: ['店頭相談', 'LINE相談', '電話相談', 'オンライン相談'], chartTarget: 'general_notes' },
+  { name: 'preferred_datetime', label: 'ご希望の日時（第1・第2希望）', type: 'textarea', required: false, placeholder: '例：8月20日 午後、8月22日 14時以降', chartTarget: 'follow_up_plan' },
 ]
 
 const fieldTypeLabels: Record<FieldType, string> = {
@@ -49,6 +52,8 @@ const fieldTypeLabels: Record<FieldType, string> = {
   number: '数値',
   textarea: '長文入力',
   date: '日付',
+  select: '選択リスト',
+  radio: 'ひとつ選択',
 }
 
 const chartTargetLabels: Array<[ChartTarget, string]> = [
@@ -66,10 +71,10 @@ export default function FormsPage() {
   const { selectedAccountId, selectedAccount } = useAccount()
   const [forms, setForms] = useState<HarnessForm[]>([])
   const [tags, setTags] = useState<Tag[]>([])
-  const [name, setName] = useState('漢方相談フォーム')
-  const [description, setDescription] = useState('ご相談に必要な内容をご入力ください。')
+  const [name, setName] = useState('相談前のかんたん確認フォーム')
+  const [description, setDescription] = useState('うまく説明できなくても大丈夫です。分かる範囲でお知らせください。')
   const [selectedTagId, setSelectedTagId] = useState('')
-  const [newTagName, setNewTagName] = useState('漢方相談希望')
+  const [newTagName, setNewTagName] = useState('相談希望')
   const [fields, setFields] = useState<FormField[]>(initialFields)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingActive, setEditingActive] = useState(true)
@@ -107,7 +112,7 @@ export default function FormsPage() {
   useEffect(() => { void load() }, [load])
 
   const formUrl = (formId: string) => selectedAccount?.liffId
-    ? `https://liff.line.me/${selectedAccount.liffId}?formId=${encodeURIComponent(formId)}`
+    ? `https://liff.line.me/${selectedAccount.liffId}?page=form&id=${encodeURIComponent(formId)}`
     : ''
 
   const copyFormUrl = async (form: HarnessForm) => {
@@ -221,10 +226,10 @@ export default function FormsPage() {
   const resetEditor = () => {
     setEditingId(null)
     setEditingActive(true)
-    setName('漢方相談フォーム')
-    setDescription('ご相談に必要な内容をご入力ください。')
+    setName('相談前のかんたん確認フォーム')
+    setDescription('うまく説明できなくても大丈夫です。分かる範囲でお知らせください。')
     setSelectedTagId('')
-    setNewTagName('漢方相談希望')
+    setNewTagName('相談希望')
     setFields(initialFields.map((field) => ({ ...field })))
   }
 
@@ -288,6 +293,7 @@ export default function FormsPage() {
     if (!name.trim()) return setError('フォーム名を入力してください。')
     if (fields.length === 0) return setError('質問を1つ以上追加してください。')
     if (fields.some((field) => !field.label.trim())) return setError('質問文が空欄になっています。')
+    if (fields.some((field) => (field.type === 'select' || field.type === 'radio') && !(field.options || []).length)) return setError('選択式の質問には選択肢を1つ以上入力してください。')
     if (fields.some((field) => field.tagRules?.some((rule) => !rule.tagId || (rule.operator !== 'not_empty' && !rule.value.trim())))) return setError('条件タグの条件値とタグを入力してください。')
 
     setSaving(true)
@@ -304,10 +310,36 @@ export default function FormsPage() {
         }
       }
 
+      // 鈴木薬舗の相談前フォームでは、相談方法の回答を自動でタグ化する。
+      // これにより店頭・LINE・電話・オンラインを一覧で絞り込める。
+      const methodField = fields.find((field) => field.name === 'consultation_method')
+      const methodTagIds = new Map<string, string>()
+      if (methodField?.options?.length) {
+        for (const option of methodField.options) {
+          const tagName = `相談方法：${option}`
+          const existing = tags.find((tag) => tag.name === tagName)
+          if (existing) {
+            methodTagIds.set(option, existing.id)
+          } else {
+            const created = await api.tags.create({ name: tagName, color: '#3B82F6' })
+            if (!created.success) throw new Error(created.error)
+            methodTagIds.set(option, created.data.id)
+          }
+        }
+      }
+
       const normalizedFields = fields.map((field, index) => ({
         ...field,
         name: field.name || `field_${index + 1}`,
         label: field.label.trim(),
+        ...(field.name === 'consultation_method' && methodTagIds.size > 0
+          ? {
+              tagRules: [
+                ...(field.tagRules || []).filter((rule) => !rule.value || !methodTagIds.has(rule.value)),
+                ...Array.from(methodTagIds, ([value, methodTagId]) => ({ operator: 'equals' as const, value, tagId: methodTagId })),
+              ],
+            }
+          : {}),
       }))
 
       const result = await fetchApi<{ success: boolean; data: HarnessForm; error?: string }>(editingId ? `/api/forms/${editingId}` : '/api/forms', {
@@ -373,6 +405,18 @@ export default function FormsPage() {
                     </select>
                     <button type="button" onClick={() => removeField(index)} className="px-2 text-sm text-red-500 hover:text-red-700">削除</button>
                   </div>
+                  {(field.type === 'select' || field.type === 'radio') && (
+                    <label className="mt-2 block text-xs font-medium text-gray-600">
+                      選択肢（1行に1つ）
+                      <textarea
+                        value={(field.options || []).join('\n')}
+                        onChange={(event) => updateField(index, { options: event.target.value.split('\n').map((value) => value.trim()).filter(Boolean) })}
+                        rows={4}
+                        className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+                        placeholder={'店頭相談\nLINE相談\n電話相談\nオンライン相談'}
+                      />
+                    </label>
+                  )}
                   <label className="mt-2 flex items-center gap-2 text-sm text-gray-600">
                     <input type="checkbox" checked={field.required} onChange={(e) => updateField(index, { required: e.target.checked })} className="rounded border-gray-300" />
                     必須回答にする
@@ -527,7 +571,11 @@ export default function FormsPage() {
                     <span className="mb-1 block text-sm font-medium text-gray-700">{field.label}{field.required && <span className="ml-1 text-red-500">*</span>}</span>
                     {field.type === 'textarea'
                       ? <textarea rows={3} value={previewAnswers[field.name] || ''} onChange={(event) => setPreviewAnswers((current) => ({ ...current, [field.name]: event.target.value }))} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder={field.placeholder} />
-                      : <input type={field.type} value={previewAnswers[field.name] || ''} onChange={(event) => setPreviewAnswers((current) => ({ ...current, [field.name]: event.target.value }))} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder={field.placeholder} />}
+                      : field.type === 'select'
+                        ? <select value={previewAnswers[field.name] || ''} onChange={(event) => setPreviewAnswers((current) => ({ ...current, [field.name]: event.target.value }))} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"><option value="">選択してください</option>{(field.options || []).map((option) => <option key={option} value={option}>{option}</option>)}</select>
+                        : field.type === 'radio'
+                          ? <div className="space-y-2">{(field.options || []).map((option) => <label key={option} className="flex items-center gap-2 rounded-lg border p-2 text-sm"><input type="radio" name={`preview-${field.name}`} value={option} checked={previewAnswers[field.name] === option} onChange={(event) => setPreviewAnswers((current) => ({ ...current, [field.name]: event.target.value }))} />{option}</label>)}</div>
+                          : <input type={field.type} value={previewAnswers[field.name] || ''} onChange={(event) => setPreviewAnswers((current) => ({ ...current, [field.name]: event.target.value }))} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder={field.placeholder} />}
                   </label>
                 ))}
               </div>

@@ -4,8 +4,73 @@ import { computeUnansweredInbox } from '../services/unanswered-inbox.js';
 import { matchingConditionalTagIds } from '../services/form-field-rules.js';
 import { jstDayBounds } from '../services/jst-day.js';
 import { parseProlineBookingNotice } from '../services/proline-booking-import.js';
+import {
+  createScenario,
+  createScenarioStep,
+  enrollFriendInScenario,
+  updateScenario,
+} from '@line-crm/db';
 
 const consultationCharts = new Hono<Env>();
+
+const MEDICATION_FOLLOW_UP_SCENARIO_NAME = '服薬後フォロー（当日・3日後・7日後）';
+
+async function ensureMedicationFollowUpScenario(db: D1Database, accountId: string) {
+  const existing = await db.prepare(
+    `SELECT id FROM scenarios
+      WHERE line_account_id = ? AND name = ?
+      ORDER BY created_at ASC LIMIT 1`,
+  ).bind(accountId, MEDICATION_FOLLOW_UP_SCENARIO_NAME).first<{ id: string }>();
+  if (existing) {
+    await updateScenario(db, existing.id, {
+      is_active: 1,
+      stop_on_customer_reply: 1,
+      stop_on_booking: 1,
+      stop_on_consultation: 1,
+    });
+    return existing.id;
+  }
+
+  const scenario = await createScenario(db, {
+    name: MEDICATION_FOLLOW_UP_SCENARIO_NAME,
+    description: '鈴木薬舗の服薬開始後フォロー。返信・予約・相談記録が入ったら自動停止します。',
+    triggerType: 'manual',
+    deliveryMode: 'elapsed',
+  });
+  await db.prepare(`UPDATE scenarios SET line_account_id = ? WHERE id = ?`)
+    .bind(accountId, scenario.id).run();
+  await updateScenario(db, scenario.id, {
+    stop_on_customer_reply: 1,
+    stop_on_booking: 1,
+    stop_on_consultation: 1,
+  });
+
+  const steps = [
+    {
+      day: 0,
+      text: '{{name}}様\n\n本日はご相談いただき、ありがとうございました。\n今日からのお薬について、焦って変化を探さなくても大丈夫です。まずはご案内した通りにお使いください。\n\n気になることがありましたら、いつでもこのLINEへご返信ください。\n\n鈴木薬舗',
+    },
+    {
+      day: 3,
+      text: '{{name}}様\n\nお薬を始めてから数日たちました。効き目を急いで判断する時期ではありませんが、飲みにくさ、眠気、胃の不快感など、続けるうえで気になることはありませんか。\n\n「少し気になる」程度でも構いません。このLINEへそのままお知らせください。強い症状や急な体調変化がある場合は、返信を待たず医療機関へご相談ください。\n\n鈴木薬舗',
+    },
+    {
+      day: 7,
+      text: '{{name}}様\n\nお薬を始める前と比べて、体調や日々の過ごしやすさに何か変化はありましたか。良い変化も、気になる変化も、まだ分からないというご様子も大切な情報です。\n\nうまく説明できなくても大丈夫です。今のお気持ちを一言、このLINEへご返信ください。\n\n鈴木薬舗',
+    },
+  ];
+  for (const [index, step] of steps.entries()) {
+    await createScenarioStep(db, {
+      scenarioId: scenario.id,
+      stepOrder: index,
+      messageType: 'text',
+      messageContent: step.text,
+      offsetDays: step.day,
+      offsetMinutes: 0,
+    });
+  }
+  return scenario.id;
+}
 
 async function friendInAccount(db: D1Database, friendId: string, accountId: string) {
   return db.prepare(
@@ -31,7 +96,7 @@ consultationCharts.get('/api/suzuki/today', async (c) => {
   const accountId = c.req.query('account_id');
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
   const { date, start, end } = jstDayBounds();
-  const [bookings, submissions, warnings, followUps, unanswered] = await Promise.all([
+  const [bookings, submissions, warnings, followUps, unanswered, orders] = await Promise.all([
     c.env.DB.prepare(
       `SELECT b.id, b.friend_id, b.starts_at, b.status, f.display_name AS friend_name,
               m.name AS menu_name, s.display_name AS staff_name
@@ -75,6 +140,19 @@ consultationCharts.get('/api/suzuki/today', async (c) => {
         ORDER BY cr.follow_up_due_date ASC LIMIT 20`,
     ).bind(accountId, date).all(),
     computeUnansweredInbox(c.env.DB, { account: accountId, page: 1, pageSize: 20 }),
+    c.env.DB.prepare(
+      `SELECT o.id, o.friend_id, o.customer_name_snapshot, o.status, o.updated_at,
+              COALESCE((
+                SELECT group_concat(oi.item_name || '×' || oi.quantity, '、')
+                  FROM order_items oi WHERE oi.order_id = o.id
+              ), '商品未入力') AS item_summary
+         FROM orders o
+        WHERE o.line_account_id = ? AND o.status <> 'shipped'
+        ORDER BY CASE o.status
+          WHEN 'ready_to_ship' THEN 0 WHEN 'preparing' THEN 1 ELSE 2 END,
+          o.updated_at ASC
+        LIMIT 20`,
+    ).bind(accountId).all(),
   ]);
   return c.json({
     date,
@@ -83,12 +161,14 @@ consultationCharts.get('/api/suzuki/today', async (c) => {
     warnings: warnings.results,
     followUps: followUps.results,
     unanswered: unanswered.rows,
+    orders: orders.results,
     counts: {
       bookings: bookings.results.length,
       submissions: submissions.results.length,
       warnings: warnings.results.length,
       followUps: followUps.results.length,
       unanswered: unanswered.total,
+      orders: orders.results.length,
     },
   });
 });
@@ -456,6 +536,50 @@ consultationCharts.post('/api/consultation-charts/:friendId/records', async (c) 
     action: 'create_consultation_record',
   });
   return c.json({ id }, 201);
+});
+
+consultationCharts.post('/api/consultation-charts/:friendId/medication-follow-up', async (c) => {
+  const accountId = c.req.query('account_id');
+  if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
+  const friendId = c.req.param('friendId');
+  if (!(await friendInAccount(c.env.DB, friendId, accountId))) {
+    return c.json({ error: 'friend_not_found' }, 404);
+  }
+  const chart = await c.env.DB.prepare(
+    `SELECT id FROM consultation_charts WHERE friend_id = ? AND line_account_id = ?`,
+  ).bind(friendId, accountId).first<{ id: string }>();
+  if (!chart) return c.json({ error: 'chart_not_created' }, 409);
+
+  const body = await c.req.json<{ startAt?: string; confirmed?: boolean }>();
+  if (body.confirmed !== true) return c.json({ error: 'confirmation_required' }, 400);
+  const parsedStart = body.startAt ? new Date(body.startAt) : new Date();
+  if (Number.isNaN(parsedStart.getTime())) return c.json({ error: 'invalid_start_at' }, 400);
+  const distance = Math.abs(parsedStart.getTime() - Date.now());
+  if (distance > 366 * 24 * 60 * 60_000) return c.json({ error: 'start_at_out_of_range' }, 400);
+
+  const scenarioId = await ensureMedicationFollowUpScenario(c.env.DB, accountId);
+  const enrollment = await enrollFriendInScenario(
+    c.env.DB,
+    friendId,
+    scenarioId,
+    parsedStart.toISOString(),
+  );
+  if (!enrollment) {
+    return c.json({ error: 'medication_follow_up_already_active' }, 409);
+  }
+  await audit(c.env.DB, {
+    accountId,
+    chartId: chart.id,
+    friendId,
+    staffId: c.get('staff').id,
+    action: 'start_medication_follow_up',
+  });
+  return c.json({
+    enrollmentId: enrollment.id,
+    scenarioId,
+    startAt: enrollment.started_at,
+    scheduleDays: [0, 3, 7],
+  }, 201);
 });
 
 consultationCharts.patch('/api/consultation-charts/:friendId/records/:recordId/follow-up', async (c) => {

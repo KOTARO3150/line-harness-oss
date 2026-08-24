@@ -139,6 +139,13 @@ async function processSingleDelivery(
   },
   workerUrl?: string,
 ): Promise<boolean> {
+  const stopReason = await resolveScenarioStopReason(db, fs);
+  if (stopReason) {
+    await completeFriendScenario(db, fs.id, stopReason);
+    console.log(`[scenario] stopped enrollment=${fs.id} reason=${stopReason}`);
+    return false;
+  }
+
   // Optimistic lock: claim this delivery (prevents duplicate sends from parallel workers)
   const claimed = await claimFriendScenarioForDelivery(db, fs.id, fs.current_step_order);
   if (!claimed) return false;
@@ -286,6 +293,72 @@ async function processSingleDelivery(
     }
   }
   return true;
+}
+
+type StopRuleScenario = {
+  stop_on_customer_reply: number;
+  stop_on_booking: number;
+  stop_on_consultation: number;
+};
+
+/**
+ * 人との相談へ進んだお客様に、自動シナリオを追いかけて送らないための停止判定。
+ * シナリオ開始後に発生した出来事だけを見るので、過去の相談歴だけでは停止しない。
+ */
+export async function resolveScenarioStopReason(
+  db: D1Database,
+  fs: { friend_id: string; scenario_id: string; started_at: string },
+): Promise<'customer_replied' | 'booking_created' | 'consultation_created' | null> {
+  const scenario = await db
+    .prepare(
+      `SELECT stop_on_customer_reply, stop_on_booking, stop_on_consultation
+         FROM scenarios WHERE id = ?`,
+    )
+    .bind(fs.scenario_id)
+    .first<StopRuleScenario>();
+  if (!scenario) return null;
+
+  if (scenario.stop_on_customer_reply) {
+    const reply = await db
+      .prepare(
+        `SELECT 1 FROM messages_log
+          WHERE friend_id = ? AND direction = 'incoming'
+            AND datetime(created_at) > datetime(?)
+          LIMIT 1`,
+      )
+      .bind(fs.friend_id, fs.started_at)
+      .first();
+    if (reply) return 'customer_replied';
+  }
+
+  if (scenario.stop_on_booking) {
+    const booking = await db
+      .prepare(
+        `SELECT 1 FROM bookings
+          WHERE friend_id = ? AND status IN ('requested', 'confirmed')
+            AND datetime(requested_at) > datetime(?)
+          LIMIT 1`,
+      )
+      .bind(fs.friend_id, fs.started_at)
+      .first();
+    if (booking) return 'booking_created';
+  }
+
+  if (scenario.stop_on_consultation) {
+    const consultation = await db
+      .prepare(
+        `SELECT 1
+           FROM consultation_records cr
+           INNER JOIN consultation_charts cc ON cc.id = cr.chart_id
+          WHERE cc.friend_id = ? AND datetime(cr.consultation_at) > datetime(?)
+          LIMIT 1`,
+      )
+      .bind(fs.friend_id, fs.started_at)
+      .first();
+    if (consultation) return 'consultation_created';
+  }
+
+  return null;
 }
 
 /** Supported scenario step condition_type values evaluated at delivery time. */
@@ -454,7 +527,12 @@ export function messageToLogPayload(message: Message): { messageType: string; co
 
 export function buildMessage(messageType: string, messageContent: string, altText?: string): Message {
   if (messageType === 'text') {
-    return { type: 'text', text: messageContent };
+    // Messages entered through JSON/API-backed settings can contain the
+    // two-character escape sequence "\\n" instead of an actual newline.
+    // LINE does not decode it for us, so normalise it immediately before
+    // delivery. Existing real newlines are left untouched.
+    const text = messageContent.replace(/\\r\\n|\\n|\\r/g, '\n');
+    return { type: 'text', text };
   }
 
   if (messageType === 'image') {

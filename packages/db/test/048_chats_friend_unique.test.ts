@@ -312,6 +312,16 @@ describe('createChat / upsertChatOnMessage single-row guarantee', () => {
     expect(count.c).toBe(1);
   });
 
+  it('upsertChatOnMessage stores the latest LINE mark-as-read token', async () => {
+    insertFriend(sqlite, 'f-read');
+    const first = await upsertChatOnMessage(db, 'f-read', 'read-token-1');
+    expect(first.mark_as_read_token).toBe('read-token-1');
+
+    const second = await upsertChatOnMessage(db, 'f-read', 'read-token-2');
+    expect(second.id).toBe(first.id);
+    expect(second.mark_as_read_token).toBe('read-token-2');
+  });
+
   it('upsertChatOnMessage flips resolved back to unread and refreshes last_message_at (regression)', async () => {
     insertFriend(sqlite, 'f-3');
     const chat = await upsertChatOnMessage(db, 'f-3');

@@ -300,6 +300,7 @@ describe('POST /webhook — first-contact existing friends', () => {
       status: 'unread',
       notes: null,
       last_message_at: '2026-06-18T12:00:00.000+09:00',
+      mark_as_read_token: 'read-token-1',
       created_at: '2026-06-18T12:00:00.000+09:00',
       updated_at: '2026-06-18T12:00:00.000+09:00',
     });
@@ -334,7 +335,12 @@ describe('POST /webhook — first-contact existing friends', () => {
             {
               type: 'message',
               replyToken: 'reply-token',
-              message: { type: 'text', id: 'message-1', text: 'こんにちは' },
+              message: {
+                type: 'text',
+                id: 'message-1',
+                markAsReadToken: 'read-token-1',
+                text: 'こんにちは',
+              },
               timestamp: Date.now(),
               source: { type: 'user', userId: 'U-existing' },
               webhookEventId: 'event-1',
@@ -359,7 +365,7 @@ describe('POST /webhook — first-contact existing friends', () => {
       pictureUrl: 'https://example.com/profile.jpg',
       statusMessage: 'hello',
     });
-    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1', 'read-token-1');
     expect(fireEvent).toHaveBeenCalledWith(
       db,
       'message_received',

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Header from '@/components/layout/header'
 import { bookingApi, fetchApi, type BookingMenu, type BookingStaff } from '@/lib/api'
+import { publicWorkerUrl } from '@/lib/public-worker-url'
 import { useAccount } from '@/contexts/account-context'
 
 interface CalendarConnection {
@@ -58,9 +59,10 @@ export default function BookingSetupPage() {
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
   const [calendarBusy, setCalendarBusy] = useState(false)
+  const [calendarError, setCalendarError] = useState('')
   const [zoomConfigured, setZoomConfigured] = useState(false)
 
-  const workerBase = process.env.NEXT_PUBLIC_API_URL ?? ''
+  const workerBase = publicWorkerUrl()
   const bookingUrl = workerBase && selectedAccount?.liffId
     ? `${workerBase}/o?liffId=${encodeURIComponent(selectedAccount.liffId)}&page=salon-book`
     : ''
@@ -102,18 +104,20 @@ export default function BookingSetupPage() {
   const activeMenus = menus.filter((menu) => menu.is_active).length
   const activeStaff = staff.filter((person) => person.is_active).length
   const activeCalendars = calendars.filter((calendar) => calendar.isActive).length
+  const activeCalendar = calendars.find((calendar) => calendar.isActive)
   const calendarResult = searchParams.get('calendar')
 
   const connectCalendar = async () => {
     setCalendarBusy(true)
     setError('')
+    setCalendarError('')
     try {
       const result = await fetchApi<{ success: boolean; data: { authorizationUrl: string } }>(
         '/api/integrations/google-calendar/oauth/start',
       )
       window.location.assign(result.data.authorizationUrl)
     } catch (cause) {
-      setError(cause instanceof Error && cause.message.includes('503')
+      setCalendarError(cause instanceof Error && cause.message.includes('503')
         ? 'Google OAuthの環境設定がまだ完了していません。'
         : 'Googleの接続画面を開けませんでした。')
       setCalendarBusy(false)
@@ -159,13 +163,29 @@ export default function BookingSetupPage() {
           <section className="mt-6 rounded-xl border border-gray-200 bg-white p-5">
             <h2 className="font-semibold text-gray-900">Googleカレンダー接続</h2>
             <p className="mt-2 text-sm leading-6 text-gray-600">Googleの公式許可画面を使用します。パスワードやアクセストークンをこの画面へ入力する必要はありません。</p>
+            {activeCalendar && (
+              <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-4">
+                <div className="text-xs font-medium text-blue-700">現在の予約保存先</div>
+                <div className="mt-1 break-all font-semibold text-blue-950">{activeCalendar.calendarId}</div>
+                {activeCalendar.calendarId.toLowerCase() !== 'suzuyaku.0515@gmail.com' && (
+                  <p className="mt-2 text-xs leading-5 text-amber-800">予約専用の保存先にする場合は、下の「保存先を変更」から <strong>suzuyaku.0515@gmail.com</strong> を選択してください。</p>
+                )}
+              </div>
+            )}
             <div className="mt-4 flex flex-wrap gap-2">
               {activeCalendars === 1 ? (
-                <button type="button" disabled={calendarBusy} onClick={() => void disconnectCalendar()} className="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50">{calendarBusy ? '処理中…' : '連携を解除'}</button>
+                <>
+                  <button type="button" disabled={calendarBusy} onClick={() => void connectCalendar()} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50">{calendarBusy ? 'Googleを開いています…' : '保存先を変更'}</button>
+                  <button type="button" disabled={calendarBusy} onClick={() => void disconnectCalendar()} className="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50">連携を解除</button>
+                </>
               ) : (
                 <button type="button" disabled={calendarBusy} onClick={() => void connectCalendar()} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50">{calendarBusy ? 'Googleを開いています…' : 'Googleカレンダーに接続'}</button>
               )}
             </div>
+            <p className="mt-3 text-xs leading-5 text-gray-500">有料契約や管理に使うGoogleアカウントとは別のアカウントを選べます。変更が成功するまで現在の接続は維持されます。</p>
+            {calendarError && (
+              <p className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700" role="alert">{calendarError}</p>
+            )}
           </section>
 
           <section className="mt-6 rounded-xl border border-blue-200 bg-blue-50 p-5">

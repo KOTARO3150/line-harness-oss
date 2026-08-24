@@ -143,7 +143,15 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
   const [error, setError] = useState('')
 
   const [editing, setEditing] = useState(false)
-  const [editForm, setEditForm] = useState({ name: '', description: '', triggerType: 'friend_add' as ScenarioTriggerType, isActive: true })
+  const [editForm, setEditForm] = useState({
+    name: '',
+    description: '',
+    triggerType: 'friend_add' as ScenarioTriggerType,
+    isActive: true,
+    stopOnCustomerReply: true,
+    stopOnBooking: true,
+    stopOnConsultation: true,
+  })
   const [saving, setSaving] = useState(false)
 
   const [showStepForm, setShowStepForm] = useState(false)
@@ -172,6 +180,9 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
           description: res.data.description ?? '',
           triggerType: res.data.triggerType,
           isActive: res.data.isActive,
+          stopOnCustomerReply: res.data.stopOnCustomerReply ?? true,
+          stopOnBooking: res.data.stopOnBooking ?? true,
+          stopOnConsultation: res.data.stopOnConsultation ?? true,
         })
       } else {
         setError(res.error)
@@ -227,6 +238,9 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
         description: editForm.description || null,
         triggerType: editForm.triggerType,
         isActive: editForm.isActive,
+        stopOnCustomerReply: editForm.stopOnCustomerReply,
+        stopOnBooking: editForm.stopOnBooking,
+        stopOnConsultation: editForm.stopOnConsultation,
       })
       if (res.success) {
         setEditing(false)
@@ -492,6 +506,29 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
               />
               <label htmlFor="editIsActive" className="text-sm text-gray-600">有効</label>
             </div>
+            <fieldset className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+              <legend className="px-1 text-sm font-semibold text-amber-900">安全のため自動配信を止める条件</legend>
+              <p className="mb-3 text-xs leading-5 text-amber-800">
+                お客様が次の行動をした時点で、残りのステップを送らないようにします。
+              </p>
+              <div className="space-y-3">
+                {[
+                  ['stopOnCustomerReply', 'お客様からLINE返信が届いた'],
+                  ['stopOnBooking', '相談予約が作成された'],
+                  ['stopOnConsultation', '相談記録・カルテが作成された'],
+                ].map(([key, label]) => (
+                  <label key={key} className="flex cursor-pointer items-center gap-2 text-sm text-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={editForm[key as 'stopOnCustomerReply' | 'stopOnBooking' | 'stopOnConsultation']}
+                      onChange={(e) => setEditForm({ ...editForm, [key]: e.target.checked })}
+                      className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
+                    />
+                    <span>{label}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
             <div className="flex gap-2">
               <button
                 onClick={handleSaveScenario}
@@ -509,6 +546,9 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                     description: scenario.description ?? '',
                     triggerType: scenario.triggerType,
                     isActive: scenario.isActive,
+                    stopOnCustomerReply: scenario.stopOnCustomerReply ?? true,
+                    stopOnBooking: scenario.stopOnBooking ?? true,
+                    stopOnConsultation: scenario.stopOnConsultation ?? true,
                   })
                 }}
                 className="px-4 py-2 min-h-[44px] text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
@@ -547,6 +587,17 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
               <span>トリガー: {triggerOptions.find(o => o.value === scenario.triggerType)?.label ?? scenario.triggerType}</span>
               <span>ステップ数: {scenario.steps.length}</span>
               <span>作成日: {new Date(scenario.createdAt).toLocaleDateString('ja-JP')}</span>
+            </div>
+            <div className="mt-4 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2">
+              <p className="text-xs font-medium text-amber-900">安全停止</p>
+              <p className="mt-1 text-xs leading-5 text-amber-800">
+                {[
+                  (scenario.stopOnCustomerReply ?? true) && 'LINE返信',
+                  (scenario.stopOnBooking ?? true) && '相談予約',
+                  (scenario.stopOnConsultation ?? true) && '相談記録・カルテ',
+                ].filter(Boolean).join('・') || '停止条件なし'}
+                の時点で残りの自動配信を停止します。
+              </p>
             </div>
           </div>
         )}

@@ -4,6 +4,7 @@ import { computeUnansweredInbox } from '../services/unanswered-inbox.js';
 import { matchingConditionalTagIds } from '../services/form-field-rules.js';
 import { jstDayBounds } from '../services/jst-day.js';
 import { parseProlineBookingNotice } from '../services/proline-booking-import.js';
+import { requireChartAccess } from '../middleware/chart-access.js';
 import {
   createScenario,
   createScenarioStep,
@@ -12,6 +13,12 @@ import {
 } from '@line-crm/db';
 
 const consultationCharts = new Hono<Env>();
+
+// 相談カルテは登録制。氏名・生年月日・電話番号・アレルギー・服薬情報を含むため、
+// 管理画面でメニューを隠すだけでなく API 側で必ず止める。
+// /api/suzuki/today はカルテ由来の項目だけを伏せるので、ここでは止めない。
+consultationCharts.use('/api/consultation-charts', requireChartAccess);
+consultationCharts.use('/api/consultation-charts/*', requireChartAccess);
 
 const MEDICATION_FOLLOW_UP_SCENARIO_NAME = '服薬後フォロー（当日・3日後・7日後）';
 
@@ -154,19 +161,27 @@ consultationCharts.get('/api/suzuki/today', async (c) => {
         LIMIT 20`,
     ).bind(accountId).all(),
   ]);
+  // カルテ由来の「要注意」「フォロー期限」は登録制。未登録の担当者には
+  // 件数も含めて返さない。予約・フォーム・未対応トーク・注文は全員が見られる。
+  const staff = c.get('staff');
+  const chartVisible = staff.role === 'owner' || staff.canViewCharts;
+  const warningRows = chartVisible ? warnings.results : [];
+  const followUpRows = chartVisible ? followUps.results : [];
+
   return c.json({
     date,
+    chartVisible,
     bookings: bookings.results,
     submissions: submissions.results,
-    warnings: warnings.results,
-    followUps: followUps.results,
+    warnings: warningRows,
+    followUps: followUpRows,
     unanswered: unanswered.rows,
     orders: orders.results,
     counts: {
       bookings: bookings.results.length,
       submissions: submissions.results.length,
-      warnings: warnings.results.length,
-      followUps: followUps.results.length,
+      warnings: warningRows.length,
+      followUps: followUpRows.length,
       unanswered: unanswered.total,
       orders: orders.results.length,
     },

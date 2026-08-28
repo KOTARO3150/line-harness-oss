@@ -34,6 +34,16 @@ function previewDb(options: { existingProline?: boolean; sameTimeSuzuki?: boolea
 
 function app() {
   const instance = new Hono<Env>();
+  // カルテは登録制になったため、認証済みかつ閲覧登録済みの担当者を用意する。
+  instance.use('*', async (c, next) => {
+    c.set('staff', {
+      id: 'staff-1',
+      name: '相談担当',
+      role: 'staff',
+      canViewCharts: true,
+    });
+    return next();
+  });
   instance.route('/', consultationCharts);
   return instance;
 }

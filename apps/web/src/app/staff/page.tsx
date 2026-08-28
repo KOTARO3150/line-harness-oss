@@ -42,6 +42,7 @@ export default function StaffPage() {
   const [formName, setFormName] = useState('')
   const [formEmail, setFormEmail] = useState('')
   const [formRole, setFormRole] = useState<'admin' | 'staff'>('staff')
+  const [formCanViewCharts, setFormCanViewCharts] = useState(false)
   const [formLoading, setFormLoading] = useState(false)
   const [formError, setFormError] = useState('')
 
@@ -71,9 +72,15 @@ export default function StaffPage() {
     setFormLoading(true)
     setFormError('')
     try {
-      const body: { name: string; role: 'admin' | 'staff'; email?: string } = {
+      const body: {
+        name: string
+        role: 'admin' | 'staff'
+        email?: string
+        canViewCharts: boolean
+      } = {
         name: formName,
         role: formRole,
+        canViewCharts: formCanViewCharts,
       }
       if (formEmail) body.email = formEmail
 
@@ -88,6 +95,7 @@ export default function StaffPage() {
         setFormName('')
         setFormEmail('')
         setFormRole('staff')
+        setFormCanViewCharts(false)
         setShowForm(false)
         await loadMembers()
       } else {
@@ -105,6 +113,18 @@ export default function StaffPage() {
       await fetchApi<ApiResponse<StaffMember>>(`/api/staff/${member.id}`, {
         method: 'PATCH',
         body: JSON.stringify({ isActive: !member.isActive }),
+      })
+      await loadMembers()
+    } catch {
+      setError('更新に失敗しました')
+    }
+  }
+
+  const handleToggleCharts = async (member: StaffMember) => {
+    try {
+      await fetchApi<ApiResponse<StaffMember>>(`/api/staff/${member.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ canViewCharts: !member.canViewCharts }),
       })
       await loadMembers()
     } catch {
@@ -225,6 +245,20 @@ export default function StaffPage() {
                 </select>
               </div>
             </div>
+            <label className="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm text-amber-950">
+              <input
+                type="checkbox"
+                checked={formCanViewCharts}
+                onChange={(e) => setFormCanViewCharts(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded border-gray-300"
+              />
+              <span>
+                <span className="font-semibold">相談カルテを見られるようにする</span>
+                <span className="block text-xs mt-0.5">
+                  氏名・生年月日・電話番号・アレルギー・服薬情報を扱います。必要な人だけに許可してください。あとから変更できます。
+                </span>
+              </span>
+            </label>
             {formError && (
               <p className="text-sm text-red-600">{formError}</p>
             )}
@@ -284,6 +318,7 @@ export default function StaffPage() {
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider hidden sm:table-cell">メール</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">ロール</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider hidden md:table-cell">APIキー</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">カルテ</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">状態</th>
                 <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">操作</th>
               </tr>
@@ -298,6 +333,23 @@ export default function StaffPage() {
                   </td>
                   <td className="px-4 py-3 text-gray-400 font-mono text-xs hidden md:table-cell">
                     {maskKey(member.apiKey ?? '')}
+                  </td>
+                  <td className="px-4 py-3">
+                    {member.role === 'owner' ? (
+                      <span className="text-xs text-gray-500">常に閲覧可</span>
+                    ) : (
+                      <button
+                        onClick={() => handleToggleCharts(member)}
+                        className={`px-2.5 py-1 text-xs font-medium rounded border transition-colors ${
+                          member.canViewCharts
+                            ? 'text-amber-900 bg-amber-50 border-amber-300 hover:bg-amber-100'
+                            : 'text-gray-500 bg-white border-gray-300 hover:bg-gray-50'
+                        }`}
+                        title="相談カルテの閲覧許可を切り替えます"
+                      >
+                        {member.canViewCharts ? '閲覧できる' : '閲覧できない'}
+                      </button>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <span className={`inline-flex items-center gap-1.5 text-xs ${member.isActive ? 'text-green-700' : 'text-gray-400'}`}>

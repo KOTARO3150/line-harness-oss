@@ -27,6 +27,8 @@ function serializeStaff(row: StaffMember, masked = true) {
     role: row.role,
     apiKey: masked ? maskApiKey(row) : row.api_key,
     isActive: Boolean(row.is_active),
+    // オーナーは登録の有無にかかわらずカルテを閲覧できる。
+    canViewCharts: row.role === 'owner' || row.can_view_charts === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -46,6 +48,7 @@ staff.get('/api/staff/me', async (c) => {
           name: 'Owner',
           role: 'owner',
           email: null,
+          canViewCharts: true,
         },
       });
     }
@@ -62,6 +65,7 @@ staff.get('/api/staff/me', async (c) => {
         name: member.name,
         role: member.role,
         email: member.email,
+        canViewCharts: member.role === 'owner' || member.can_view_charts === 1,
       },
     });
   } catch (err) {
@@ -99,7 +103,12 @@ staff.get('/api/staff/:id', requireRole('owner'), async (c) => {
 // POST /api/staff — owner only. Create staff. Returns full API key (one-time visible).
 staff.post('/api/staff', requireRole('owner'), async (c) => {
   try {
-    const body = await c.req.json<{ name: string; email?: string; role: string }>();
+    const body = await c.req.json<{
+      name: string;
+      email?: string;
+      role: string;
+      canViewCharts?: boolean;
+    }>();
 
     if (!body.name) {
       return c.json({ success: false, error: 'name is required' }, 400);
@@ -114,6 +123,8 @@ staff.post('/api/staff', requireRole('owner'), async (c) => {
       name: body.name,
       email: body.email ?? null,
       role: body.role as 'owner' | 'admin' | 'staff',
+      // 既定は未登録。オーナーが明示的に登録したときだけカルテを見られる。
+      can_view_charts: body.canViewCharts ? 1 : 0,
     });
 
     // Return full (unmasked) API key one-time
@@ -133,6 +144,7 @@ staff.patch('/api/staff/:id', requireRole('owner'), async (c) => {
       email?: string | null;
       role?: string;
       isActive?: boolean;
+      canViewCharts?: boolean;
     }>();
 
     const validRoles = ['owner', 'admin', 'staff'] as const;
@@ -162,6 +174,8 @@ staff.patch('/api/staff/:id', requireRole('owner'), async (c) => {
       email: body.email,
       role: body.role as 'owner' | 'admin' | 'staff' | undefined,
       is_active: body.isActive !== undefined ? (body.isActive ? 1 : 0) : undefined,
+      can_view_charts:
+        body.canViewCharts !== undefined ? (body.canViewCharts ? 1 : 0) : undefined,
     });
 
     if (!updated) {

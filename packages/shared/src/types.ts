@@ -859,6 +859,8 @@ export interface StaffMember {
   role: 'owner' | 'admin' | 'staff';
   apiKey: string;
   isActive: boolean;
+  /** 相談カルテを閲覧できるか（オーナーは常に true）。 */
+  canViewCharts: boolean;
   createdAt: string;
   updatedAt: string;
 }

@@ -9,6 +9,7 @@ export interface StaffMember {
   api_key_hash: string | null;
   api_key_hint: string | null;
   is_active: number;
+  can_view_charts: number;
   created_at: string;
   updated_at: string;
 }
@@ -17,6 +18,7 @@ export interface CreateStaffInput {
   name: string;
   email?: string | null;
   role: 'owner' | 'admin' | 'staff';
+  can_view_charts?: number;
 }
 
 export interface UpdateStaffInput {
@@ -24,6 +26,7 @@ export interface UpdateStaffInput {
   email?: string | null;
   role?: 'owner' | 'admin' | 'staff';
   is_active?: number;
+  can_view_charts?: number;
 }
 
 function generateApiKey(): string {
@@ -113,10 +116,10 @@ export async function createStaffMember(
   await db
     .prepare(
       `INSERT INTO staff_members
-         (id, name, email, role, api_key, api_key_hash, api_key_hint, is_active, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+         (id, name, email, role, api_key, api_key_hash, api_key_hint, is_active, can_view_charts, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
     )
-    .bind(id, input.name, input.email ?? null, input.role, retiredApiKeyValue(), hash, apiKeyHint(apiKey), now, now)
+    .bind(id, input.name, input.email ?? null, input.role, retiredApiKeyValue(), hash, apiKeyHint(apiKey), input.can_view_charts ?? 0, now, now)
     .run();
 
   const created = (await db
@@ -140,6 +143,7 @@ export async function updateStaffMember(
   if (input.email !== undefined) { sets.push('email = ?'); values.push(input.email ?? null); }
   if (input.role !== undefined) { sets.push('role = ?'); values.push(input.role); }
   if (input.is_active !== undefined) { sets.push('is_active = ?'); values.push(input.is_active); }
+  if (input.can_view_charts !== undefined) { sets.push('can_view_charts = ?'); values.push(input.can_view_charts); }
 
   values.push(id);
   await db

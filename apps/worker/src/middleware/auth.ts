@@ -88,6 +88,11 @@ export type AuthenticatedStaff = {
   id: string;
   name: string;
   role: 'owner' | 'admin' | 'staff';
+  /**
+   * 相談カルテを閲覧してよい担当者として登録されているか。
+   * オーナーは登録の有無にかかわらず閲覧できる（requireChartAccess 参照）。
+   */
+  canViewCharts: boolean;
 };
 
 /**
@@ -103,12 +108,17 @@ export async function authenticateApiToken(
 
   const staff = await getStaffByApiKey(c.env.DB, token);
   if (staff) {
-    return { id: staff.id, name: staff.name, role: staff.role };
+    return {
+      id: staff.id,
+      name: staff.name,
+      role: staff.role,
+      canViewCharts: staff.can_view_charts === 1,
+    };
   }
 
   // Fallback: env API_KEY acts as owner (current rotation slot)
   if (token === c.env.API_KEY) {
-    return { id: 'env-owner', name: 'Owner', role: 'owner' };
+    return { id: 'env-owner', name: 'Owner', role: 'owner', canViewCharts: true };
   }
 
   // Legacy fallback: LEGACY_API_KEY accepted during rotation grace period.
@@ -122,7 +132,7 @@ export async function authenticateApiToken(
     token === c.env.LEGACY_API_KEY
   ) {
     console.log('[auth] accept_via=LEGACY_API_KEY');
-    return { id: 'env-owner', name: 'Owner', role: 'owner' };
+    return { id: 'env-owner', name: 'Owner', role: 'owner', canViewCharts: true };
   }
 
   return null;

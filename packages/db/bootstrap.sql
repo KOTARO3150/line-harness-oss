@@ -890,7 +890,7 @@ CREATE TABLE staff_members (
   is_active  INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-, api_key_hash TEXT, api_key_hint TEXT);
+, api_key_hash TEXT, api_key_hint TEXT, can_view_charts INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE staff_menus (
   staff_id                  TEXT NOT NULL,

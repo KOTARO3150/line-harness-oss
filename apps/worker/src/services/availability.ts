@@ -5,6 +5,7 @@
 
 import type { AvailabilityByStaff } from './booking-types.js';
 import { SLOT_GRANULARITY_MINUTES } from './booking-types.js';
+import { externalBookingEnd } from './external-booking-conflict.js';
 
 export interface Interval {
   start: string; // HH:MM
@@ -188,6 +189,29 @@ export async function getAvailability(
     duration_minutes: menu.override_duration ?? menu.duration_minutes,
     buffer_after_minutes: menu.buffer_after_minutes,
   };
+
+  // プロラインなど外部サービスから取り込んだ予約も塞ぐ。
+  // external_bookings は担当者を持たないため、その時間帯は全担当者を埋まり扱いにする。
+  // 移行の並行期間中に、向こうで埋まっている時間をこちらで受けてしまうのを防ぐ。
+  const externalBookings = await db
+    .prepare(
+      `SELECT starts_at, ends_at
+         FROM external_bookings
+        WHERE line_account_id = ?
+          AND status = 'scheduled'
+          AND starts_at < ?
+          AND COALESCE(ends_at, starts_at) >= ?`,
+    )
+    .bind(params.lineAccountId, rangeEnd.toISOString(), rangeStart.toISOString())
+    .all<{ starts_at: string; ends_at: string | null }>();
+
+  const externalBlockMinutes =
+    menuForCalc.duration_minutes + menuForCalc.buffer_after_minutes;
+  const externalBusy = externalBookings.results.map((row) => ({
+    date: jstDateStr(new Date(row.starts_at)),
+    start: jstHHMM(new Date(row.starts_at)),
+    end: jstHHMM(externalBookingEnd(row, externalBlockMinutes)),
+  }));
   const minLeadAt = new Date(params.now.getTime() + params.minLeadTimeMinutes * 60_000);
 
   const by_staff: AvailabilityByStaff[] = [];
@@ -203,9 +227,12 @@ export async function getAvailability(
           start: jstHHMM(new Date(b.starts_at)),
           end: jstHHMM(new Date(b.block_ends_at)),
         }));
+      const dayExternal = externalBusy
+        .filter((b) => b.date === date)
+        .map((b) => ({ start: b.start, end: b.end }));
       const daySlots = computeSlots({
         working: [{ start: shift.start_time, end: shift.end_time }],
-        busy: dayBookings,
+        busy: [...dayBookings, ...dayExternal],
         menu: menuForCalc,
         granularityMinutes: SLOT_GRANULARITY_MINUTES,
       });

@@ -136,6 +136,7 @@ interface StubData {
   staff?: Array<{ id: string; display_name: string; is_designation_optional: number }>;
   shifts?: Array<{ staff_id: string; work_date: string; start_time: string; end_time: string }>;
   bookings?: Array<{ staff_id: string; starts_at: string; block_ends_at: string }>;
+  externalBookings?: Array<{ starts_at: string; ends_at: string | null }>;
 }
 
 function stubDB(data: StubData): D1Database {
@@ -153,6 +154,9 @@ function stubDB(data: StubData): D1Database {
           }
           if (sql.includes('FROM staff_shifts')) {
             return { results: data.shifts ?? [] };
+          }
+          if (sql.includes('FROM external_bookings')) {
+            return { results: data.externalBookings ?? [] };
           }
           if (sql.includes('FROM bookings')) {
             return { results: data.bookings ?? [] };
@@ -303,5 +307,92 @@ describe('getAvailability', () => {
       minLeadTimeMinutes: 60,
     });
     expect(result.by_staff).toEqual([]);
+  });
+});
+
+// ----------------------------------------------------------------
+// 外部予約（プロライン取込）との二重予約防止
+// ----------------------------------------------------------------
+
+describe('getAvailability と外部予約', () => {
+  const baseMenu = {
+    duration_minutes: 60,
+    buffer_after_minutes: 0,
+    override_duration: null,
+    override_price: null,
+  };
+  const baseParams = {
+    lineAccountId: 'A1',
+    menuId: 'M1',
+    from: '2026-05-09',
+    to: '2026-05-09',
+    now: new Date('2026-05-08T00:00:00Z'),
+    minLeadTimeMinutes: 60,
+  };
+
+  test('プロラインで埋まっている時間は空きに出さない', async () => {
+    const db = stubDB({
+      menu: baseMenu,
+      staff: [{ id: 'S1', display_name: '山田', is_designation_optional: 0 }],
+      shifts: [{ staff_id: 'S1', work_date: '2026-05-09', start_time: '10:00', end_time: '13:00' }],
+      bookings: [],
+      // JST 11:00-12:00 = UTC 02:00-03:00
+      externalBookings: [
+        { starts_at: '2026-05-09T02:00:00.000Z', ends_at: '2026-05-09T03:00:00.000Z' },
+      ],
+    });
+    const result = await getAvailability(db, baseParams);
+    expect(result.by_staff[0].slots.map((s) => s.start)).toEqual(['10:00', '12:00']);
+  });
+
+  test('終了時刻が無い外部予約はメニューの所要時間ぶんを塞ぐ', async () => {
+    const db = stubDB({
+      menu: baseMenu,
+      staff: [{ id: 'S1', display_name: '山田', is_designation_optional: 0 }],
+      shifts: [{ staff_id: 'S1', work_date: '2026-05-09', start_time: '10:00', end_time: '13:00' }],
+      bookings: [],
+      externalBookings: [{ starts_at: '2026-05-09T02:00:00.000Z', ends_at: null }],
+    });
+    const result = await getAvailability(db, baseParams);
+    // 11:00 開始として 60 分を塞ぐので、11:00 と 11:30 が消える
+    expect(result.by_staff[0].slots.map((s) => s.start)).toEqual(['10:00', '12:00']);
+  });
+
+  test('担当者を持たない外部予約は全担当者を塞ぐ', async () => {
+    const db = stubDB({
+      menu: baseMenu,
+      staff: [
+        { id: 'S1', display_name: '山田', is_designation_optional: 0 },
+        { id: 'S2', display_name: '佐藤', is_designation_optional: 0 },
+      ],
+      shifts: [
+        { staff_id: 'S1', work_date: '2026-05-09', start_time: '10:00', end_time: '13:00' },
+        { staff_id: 'S2', work_date: '2026-05-09', start_time: '10:00', end_time: '13:00' },
+      ],
+      bookings: [],
+      externalBookings: [
+        { starts_at: '2026-05-09T02:00:00.000Z', ends_at: '2026-05-09T03:00:00.000Z' },
+      ],
+    });
+    const result = await getAvailability(db, baseParams);
+    for (const staff of result.by_staff) {
+      expect(staff.slots.map((s) => s.start)).toEqual(['10:00', '12:00']);
+    }
+  });
+
+  test('取り消された外部予約は塞がない（SQL の status 条件で除外される）', async () => {
+    // スタブは status を解釈しないため、除外済みの結果（空配列）を渡して
+    // 「塞がれないこと」を確認する。SQL 側の条件は本番クエリで担保。
+    const db = stubDB({
+      menu: baseMenu,
+      staff: [{ id: 'S1', display_name: '山田', is_designation_optional: 0 }],
+      shifts: [{ staff_id: 'S1', work_date: '2026-05-09', start_time: '10:00', end_time: '13:00' }],
+      bookings: [],
+      externalBookings: [],
+    });
+    const result = await getAvailability(db, baseParams);
+    expect(result.by_staff[0].slots.map((s) => s.start)).toEqual([
+      '10:00', '10:30', '11:00', '11:30', '12:00',
+    ]);
   });
 });

@@ -15,6 +15,10 @@ import { getLineAccounts } from '@line-crm/db';
 import type { Env } from '../index.js';
 import { canTransition, nextStatus, type BookingAction } from '../services/booking-state.js';
 import { computeSlots, getAvailability } from '../services/availability.js';
+import {
+  EXTERNAL_BOOKING_CONFLICT_SQL,
+  externalBookingConflictParams,
+} from '../services/external-booking-conflict.js';
 import { isJapaneseHoliday, isSeasonalClosure } from '../services/japanese-business-calendar.js';
 import {
   findIdempotencyResponse,
@@ -521,7 +525,8 @@ booking.post('/api/liff/booking/requests', async (c) => {
              AND status IN ('requested','confirmed')
              AND starts_at < ?
              AND block_ends_at > ?
-        )`,
+        )
+          AND ${EXTERNAL_BOOKING_CONFLICT_SQL}`,
     )
     .bind(
       bookingId,
@@ -542,6 +547,13 @@ booking.post('/api/liff/booking/requests', async (c) => {
       body.staff_id,
       blockEndsAt.toISOString(),
       startsAt.toISOString(),
+      // 外部予約（プロライン取込）との重複チェック
+      ...externalBookingConflictParams({
+        lineAccountId: accountId,
+        startsAt,
+        blockEndsAt,
+        fallbackMinutes: (blockEndsAt.getTime() - startsAt.getTime()) / 60_000,
+      }),
     )
     .run();
   if ((insertResult.meta?.changes ?? 0) === 0) {
@@ -1014,7 +1026,8 @@ booking.post('/api/booking/admin/bookings', async (c) => {
              AND status IN ('requested','confirmed')
              AND starts_at < ?
              AND block_ends_at > ?
-        )`,
+        )
+          AND ${EXTERNAL_BOOKING_CONFLICT_SQL}`,
     )
     .bind(
       bookingId,
@@ -1034,6 +1047,13 @@ booking.post('/api/booking/admin/bookings', async (c) => {
       body.staff_id,
       blockEndsAt.toISOString(),
       startsAt.toISOString(),
+      // 外部予約（プロライン取込）との重複チェック
+      ...externalBookingConflictParams({
+        lineAccountId: accountId,
+        startsAt,
+        blockEndsAt,
+        fallbackMinutes: (blockEndsAt.getTime() - startsAt.getTime()) / 60_000,
+      }),
     )
     .run();
   if ((insertResult.meta?.changes ?? 0) === 0) {

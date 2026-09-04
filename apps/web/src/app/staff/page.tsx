@@ -7,21 +7,6 @@ import type { StaffMember } from '@line-crm/shared'
 
 type NewApiKey = { apiKey: string; staffId: string }
 
-function RoleBadge({ role }: { role: string }) {
-  const styles =
-    role === 'owner'
-      ? 'bg-yellow-100 text-yellow-800'
-      : role === 'admin'
-        ? 'bg-blue-100 text-blue-800'
-        : 'bg-gray-100 text-gray-600'
-  const label =
-    role === 'owner' ? 'オーナー' : role === 'admin' ? '管理者' : 'スタッフ'
-  return (
-    <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${styles}`}>
-      {label}
-    </span>
-  )
-}
 
 function maskKey(key: string): string {
   if (!key || key.length <= 8) return '••••••••'
@@ -129,6 +114,25 @@ export default function StaffPage() {
       await loadMembers()
     } catch {
       setError('更新に失敗しました')
+    }
+  }
+
+  // 権限の変更。owner を降ろすときはサーバ側が「オーナーは最低1人必要です」で止める。
+  const handleChangeRole = async (member: StaffMember, role: 'owner' | 'admin' | 'staff') => {
+    if (role === member.role) return
+    try {
+      const res = await fetchApi<ApiResponse<StaffMember>>(`/api/staff/${member.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ role }),
+      })
+      if (!res.success) {
+        setError(res.error || '権限の変更に失敗しました')
+        return
+      }
+      setError('')
+      await loadMembers()
+    } catch {
+      setError('権限の変更に失敗しました')
     }
   }
 
@@ -329,7 +333,16 @@ export default function StaffPage() {
                   <td className="px-4 py-3 font-medium text-gray-900">{member.name}</td>
                   <td className="px-4 py-3 text-gray-500 hidden sm:table-cell">{member.email ?? '—'}</td>
                   <td className="px-4 py-3">
-                    <RoleBadge role={member.role} />
+                    <select
+                      value={member.role}
+                      onChange={(e) => handleChangeRole(member, e.target.value as 'owner' | 'admin' | 'staff')}
+                      aria-label={`${member.name} の権限`}
+                      className="px-2 py-1 text-xs border border-gray-300 rounded bg-white"
+                    >
+                      <option value="owner">オーナー</option>
+                      <option value="admin">管理者</option>
+                      <option value="staff">スタッフ</option>
+                    </select>
                   </td>
                   <td className="px-4 py-3 text-gray-400 font-mono text-xs hidden md:table-cell">
                     {maskKey(member.apiKey ?? '')}

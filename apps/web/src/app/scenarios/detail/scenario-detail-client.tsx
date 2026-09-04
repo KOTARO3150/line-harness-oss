@@ -3,7 +3,14 @@
 import { useState, useEffect, useCallback } from 'react'
 
 import Link from 'next/link'
-import type { Scenario, ScenarioStep, ScenarioTriggerType, MessageType, DeliveryMode } from '@line-crm/shared'
+import type {
+  Scenario,
+  ScenarioStep,
+  ScenarioStepConditionType,
+  ScenarioTriggerType,
+  MessageType,
+  DeliveryMode,
+} from '@line-crm/shared'
 import { api } from '@/lib/api'
 import Header from '@/components/layout/header'
 import FlexPreviewComponent from '@/components/flex-preview'
@@ -14,6 +21,14 @@ import ScheduleInput, {
   type ScheduleValue,
 } from '@/components/scenarios/schedule-input'
 import BulkPreviewModal from '@/components/scenarios/bulk-preview-modal'
+import {
+  conditionOptions,
+  isMetadataCondition,
+  parseConditionValue,
+  buildConditionValue,
+  validateCondition,
+  describeCondition,
+} from '@/lib/scenario-condition'
 
 type ScenarioWithSteps = Scenario & { steps: ScenarioStep[] }
 
@@ -77,6 +92,12 @@ interface StepFormState {
   templateId: string | null
   onReachTagId: string | null
   inputMode: 'direct' | 'template'
+  conditionType: ScenarioStepConditionType | ''
+  conditionTagId: string | null
+  conditionMetaKey: string
+  conditionMetaValue: string
+  /** 条件に合わなかったときの飛び先 step_order。null = 次のステップへ進む。 */
+  nextStepOnFalse: number | null
 }
 
 function emptyStepForm(stepOrder: number): StepFormState {
@@ -88,6 +109,11 @@ function emptyStepForm(stepOrder: number): StepFormState {
     templateId: null,
     onReachTagId: null,
     inputMode: 'direct',
+    conditionType: '',
+    conditionTagId: null,
+    conditionMetaKey: '',
+    conditionMetaValue: '',
+    nextStepOnFalse: null,
   }
 }
 
@@ -279,6 +305,16 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
       templateId: step.templateId ?? null,
       onReachTagId: step.onReachTagId ?? null,
       inputMode: step.templateId ? 'template' : 'direct',
+      conditionType: step.conditionType ?? '',
+      ...(() => {
+        const c = parseConditionValue(step.conditionType, step.conditionValue)
+        return {
+          conditionTagId: c.tagId,
+          conditionMetaKey: c.metaKey,
+          conditionMetaValue: c.metaValue,
+        }
+      })(),
+      nextStepOnFalse: step.nextStepOnFalse ?? null,
     })
     setEditingStepId(step.id)
     setShowStepForm(true)
@@ -310,6 +346,21 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
         return
       }
     }
+    // 分岐条件の検証。ここで止めないと、サーバ側の英語の 400 がそのまま出てしまう。
+    const conditionError = validateCondition({
+      conditionType: stepForm.conditionType,
+      fields: {
+        tagId: stepForm.conditionTagId,
+        metaKey: stepForm.conditionMetaKey,
+        metaValue: stepForm.conditionMetaValue,
+      },
+      stepOrder: stepForm.stepOrder,
+      nextStepOnFalse: stepForm.nextStepOnFalse,
+    })
+    if (conditionError) {
+      setStepError(conditionError)
+      return
+    }
     setStepSaving(true)
     setStepError('')
     try {
@@ -338,6 +389,14 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
         messageContent: payloadMessageContent,
         templateId: stepForm.inputMode === 'template' ? stepForm.templateId : null,
         onReachTagId: stepForm.onReachTagId,
+        conditionType: stepForm.conditionType || null,
+        conditionValue: buildConditionValue(stepForm.conditionType, {
+          tagId: stepForm.conditionTagId,
+          metaKey: stepForm.conditionMetaKey,
+          metaValue: stepForm.conditionMetaValue,
+        }),
+        // 条件を外したら飛び先も一緒に消す（残しても効かず、誤解のもとになる）
+        nextStepOnFalse: stepForm.conditionType ? stepForm.nextStepOnFalse : null,
       }
       if (editingStepId) {
         const res = await api.scenarios.updateStep(id, editingStepId, payload)
@@ -717,6 +776,98 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                 </>
               )}
 
+              {/* 配信の条件（分岐） */}
+              <div className="pt-3 border-t border-gray-200 space-y-2">
+                <h4 className="text-xs font-semibold text-gray-700">配信の条件（分岐）</h4>
+                <div>
+                  <select
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+                    value={stepForm.conditionType}
+                    onChange={(e) =>
+                      setStepForm({
+                        ...stepForm,
+                        conditionType: e.target.value as ScenarioStepConditionType | '',
+                      })
+                    }
+                  >
+                    {conditionOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {stepForm.conditionType && !isMetadataCondition(stepForm.conditionType) && (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">
+                      対象のタグ <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+                      value={stepForm.conditionTagId ?? ''}
+                      onChange={(e) => setStepForm({ ...stepForm, conditionTagId: e.target.value || null })}
+                    >
+                      <option value="">-- 選択してください --</option>
+                      {tags.map((t) => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {stepForm.conditionType && isMetadataCondition(stepForm.conditionType) && (
+                  <div className="flex gap-2">
+                    <div className="w-2/5">
+                      <label className="block text-xs font-medium text-gray-600 mb-1">
+                        項目名 <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                        placeholder="例: 体質"
+                        value={stepForm.conditionMetaKey}
+                        onChange={(e) => setStepForm({ ...stepForm, conditionMetaKey: e.target.value })}
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className="block text-xs font-medium text-gray-600 mb-1">値</label>
+                      <input
+                        className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                        placeholder="例: 冷え"
+                        value={stepForm.conditionMetaValue}
+                        onChange={(e) => setStepForm({ ...stepForm, conditionMetaValue: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {stepForm.conditionType && (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">条件に合わなかったとき</label>
+                    <select
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+                      value={stepForm.nextStepOnFalse ?? ''}
+                      onChange={(e) =>
+                        setStepForm({
+                          ...stepForm,
+                          nextStepOnFalse: e.target.value === '' ? null : Number(e.target.value),
+                        })
+                      }
+                    >
+                      <option value="">このステップを飛ばして次へ進む</option>
+                      {sortedSteps
+                        .filter((st) => st.stepOrder !== stepForm.stepOrder)
+                        .map((st) => (
+                          <option key={st.id} value={st.stepOrder}>
+                            ステップ {st.stepOrder} へ進む
+                          </option>
+                        ))}
+                    </select>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      飛ばして次へ進む場合、次のステップが無ければシナリオはそこで終了します
+                    </p>
+                  </div>
+                )}
+              </div>
+
               {/* 到達時のアクション */}
               <div className="pt-3 border-t border-gray-200 space-y-2">
                 <h4 className="text-xs font-semibold text-gray-700">到達時のアクション</h4>
@@ -826,6 +977,15 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                     {step.onReachTagId && (
                       <p className="mt-1 text-xs text-green-700">
                         🏷 到達タグ: {tags.find((t) => t.id === step.onReachTagId)?.name ?? step.onReachTagId}
+                      </p>
+                    )}
+                    {step.conditionType && (
+                      <p className="mt-1 text-xs text-indigo-700">
+                        ⑂ {describeCondition(step, tags)}
+                        {' — 合わないときは '}
+                        {step.nextStepOnFalse != null
+                          ? `ステップ ${step.nextStepOnFalse} へ`
+                          : '飛ばして次へ'}
                       </p>
                     )}
                   </div>

@@ -175,9 +175,28 @@ export interface ScenarioStep {
   messageType: MessageType;
   /** メッセージ内容 (テキスト or JSONシリアライズ済みFlexメッセージ等) */
   messageContent: string;
+  /**
+   * 配信前に確かめる条件。null なら無条件で配信する。
+   * tag_* は conditionValue にタグID、metadata_* は {"key","value"} の JSON。
+   */
+  conditionType?: ScenarioStepConditionType | null;
+  /** 条件の中身。conditionType が設定されているときは必ず非空文字列。 */
+  conditionValue?: string | null;
+  /**
+   * 条件に合わなかったときの飛び先 (step_order)。
+   * null なら次のステップへ進み、次が無ければシナリオを終了する。
+   */
+  nextStepOnFalse?: number | null;
   /** 作成日時 (ISO 8601) */
   createdAt: string;
 }
+
+/** シナリオステップの分岐条件の種類。worker 側 SUPPORTED_CONDITION_TYPES と対応。 */
+export type ScenarioStepConditionType =
+  | 'tag_exists'
+  | 'tag_not_exists'
+  | 'metadata_equals'
+  | 'metadata_not_equals';
 
 /** シナリオ到達率ダッシュボード */
 export interface ScenarioStats {

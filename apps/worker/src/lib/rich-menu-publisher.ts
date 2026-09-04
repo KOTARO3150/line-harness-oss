@@ -52,6 +52,9 @@ export interface LineRichMenuClient {
   // bulk link: 指定 richMenuId を userIds (最大 500 件 / リクエスト) に link。
   // 500 超は呼出側で chunk して順次呼ぶ。
   linkRichMenuBulk(richMenuId: string, userIds: string[]): Promise<void>;
+  // bulk unlink: userIds (最大 500 件 / リクエスト) の「個別割り当て」を外す。
+  // 外れた人は、アカウント全体のデフォルトメニューにフォールバックする。
+  unlinkRichMenuBulk(userIds: string[]): Promise<void>;
 }
 
 export interface R2Like {
@@ -207,6 +210,32 @@ export async function linkRichMenuBulkChunked(
   for (let i = 0; i < total; i += CHUNK) {
     const slice = userIds.slice(i, i + CHUNK);
     await line.linkRichMenuBulk(richMenuId, slice);
+    chunks++;
+  }
+  return { chunks, total };
+}
+
+/**
+ * 個別に割り当てられたリッチメニューを外す (bulk unlink)。
+ *
+ * 背景: LINE は「ユーザー個別の割り当て」がアカウント全体のデフォルトより
+ * 優先される。プロラインのように外部ツールが個別割り当てをしていると、
+ * デフォルトを差し替えても既存のお客様の画面は変わらない。この関数で
+ * 個別割り当てを外すと、その人にもデフォルトメニューが表示される。
+ *
+ * 破壊的ではない: メニュー自体は消えず、割り当て直せば元に戻る。
+ * link 版と同じく 500 件ずつ、途中失敗は throw (部分成功は扱わない)。
+ */
+export async function unlinkRichMenuBulkChunked(
+  line: LineRichMenuClient,
+  userIds: string[],
+): Promise<{ chunks: number; total: number }> {
+  const CHUNK = 500;
+  const total = userIds.length;
+  if (total === 0) return { chunks: 0, total: 0 };
+  let chunks = 0;
+  for (let i = 0; i < total; i += CHUNK) {
+    await line.unlinkRichMenuBulk(userIds.slice(i, i + CHUNK));
     chunks++;
   }
   return { chunks, total };

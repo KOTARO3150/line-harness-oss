@@ -17,6 +17,7 @@ const dbMocks = {
   setPageRichMenuId: vi.fn(),
   markRichMenuGroupPublished: vi.fn(),
   getLineAccountById: vi.fn(),
+  getFollowingLineUserIdsByTag: vi.fn(),
 };
 vi.mock('@line-crm/db', () => dbMocks);
 
@@ -500,5 +501,101 @@ describe('POST /api/rich-menu-groups/:groupId/publish', () => {
     const res = await app.request('/api/rich-menu-groups/gid12345-aaaa/publish', { method: 'POST' });
     expect(res.status).toBe(500);
     expect(dbMocks.releasePublishLock).toHaveBeenCalledWith(expect.anything(), 'gid12345-aaaa');
+  });
+});
+
+describe('POST /api/line-accounts/:accountId/rich-menu/unlink-all', () => {
+  // プロラインなど外部ツールが付けた「個別割り当て」を外し、
+  // 既存のお客様にもアカウント既定のメニューを見せるための API。
+  function fetchStub(opts: { currentDefault: string | null }) {
+    const calls: { url: string; method: string; body: unknown }[] = [];
+    const stub = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      const method = init?.method ?? 'GET';
+      calls.push({ url: u, method, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (u.endsWith('/v2/bot/user/all/richmenu') && method === 'GET') {
+        if (!opts.currentDefault) return new Response('', { status: 404 });
+        return new Response(JSON.stringify({ richMenuId: opts.currentDefault }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+    return { stub, calls };
+  }
+
+  function staffApp(role: 'owner' | 'admin' | 'staff') {
+    const app = new Hono<TestEnv>();
+    app.use('*', async (c, next) => {
+      c.set('staff', { id: 's1', role });
+      c.env = { DB: makeMinimalDbStub(), IMAGES: makeR2Stub() };
+      await next();
+    });
+    app.route('/', richMenuGroups);
+    return app;
+  }
+
+  const path = '/api/line-accounts/acc-1/rich-menu/unlink-all';
+
+  test('既定は下見だけ — LINE には一切触らない', async () => {
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'tk' });
+    dbMocks.getFollowingLineUserIdsByTag.mockResolvedValue(['U1', 'U2', 'U3']);
+    const { stub } = fetchStub({ currentDefault: 'rm-default' });
+    vi.stubGlobal('fetch', stub);
+
+    const res = await staffApp('owner').request(path, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { dryRun: boolean; total: number } };
+    expect(body.data.dryRun).toBe(true);
+    expect(body.data.total).toBe(3);
+    expect(stub).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  test('dryRun:false で bulk unlink を実行する', async () => {
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'tk' });
+    dbMocks.getFollowingLineUserIdsByTag.mockResolvedValue(['U1', 'U2']);
+    const { stub, calls } = fetchStub({ currentDefault: 'rm-default' });
+    vi.stubGlobal('fetch', stub);
+
+    const res = await staffApp('owner').request(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dryRun: false }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { total: number; chunks: number; fallbackRichMenuId: string } };
+    expect(body.data).toMatchObject({ total: 2, chunks: 1, fallbackRichMenuId: 'rm-default' });
+    const unlink = calls.find((x) => x.url.endsWith('/v2/bot/richmenu/bulk/unlink'));
+    expect(unlink?.body).toEqual({ userIds: ['U1', 'U2'] });
+    // リッチメニュー自体を消す呼び出しは絶対に出さない。
+    expect(calls.some((x) => x.method === 'DELETE')).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  test('デフォルト未設定なら 409 で止める（全員のメニューが消えるため）', async () => {
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'tk' });
+    dbMocks.getFollowingLineUserIdsByTag.mockResolvedValue(['U1']);
+    const { stub, calls } = fetchStub({ currentDefault: null });
+    vi.stubGlobal('fetch', stub);
+
+    const res = await staffApp('owner').request(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dryRun: false }),
+    });
+    expect(res.status).toBe(409);
+    expect(calls.some((x) => x.url.endsWith('/v2/bot/richmenu/bulk/unlink'))).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  test('owner 以外は 403', async () => {
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'tk' });
+    const res = await staffApp('admin').request(path, { method: 'POST' });
+    expect(res.status).toBe(403);
+  });
+
+  test('存在しないアカウントは 404', async () => {
+    dbMocks.getLineAccountById.mockResolvedValue(null);
+    const res = await staffApp('owner').request(path, { method: 'POST' });
+    expect(res.status).toBe(404);
   });
 });

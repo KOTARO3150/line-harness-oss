@@ -5,6 +5,7 @@ import {
   publishRichMenuGroup,
   unpublishRichMenuGroup,
   linkRichMenuBulkChunked,
+  unlinkRichMenuBulkChunked,
   type LineRichMenuClient,
   type R2Like,
 } from './rich-menu-publisher.js';
@@ -111,6 +112,9 @@ function makeMockLineClient(opts: { currentDefault?: string | null } = {}): Mock
     }),
     linkRichMenuBulk: vi.fn(async (_richMenuId: string, userIds: string[]) => {
       calls.push(`link-bulk-${userIds.length}`);
+    }),
+    unlinkRichMenuBulk: vi.fn(async (userIds: string[]) => {
+      calls.push(`unlink-bulk-${userIds.length}`);
     }),
   } as MockLineClient;
 }
@@ -365,6 +369,31 @@ describe('linkRichMenuBulkChunked', () => {
   it('空配列は no-op', async () => {
     const line = makeMockLineClient();
     const result = await linkRichMenuBulkChunked(line, 'lm-1', []);
+    expect(result).toEqual({ chunks: 0, total: 0 });
+    expect(line.calls).toEqual([]);
+  });
+});
+
+describe('unlinkRichMenuBulkChunked', () => {
+  it('500 以下は 1 chunk', async () => {
+    const line = makeMockLineClient();
+    const ids = Array.from({ length: 300 }, (_, i) => `U${i}`);
+    const result = await unlinkRichMenuBulkChunked(line, ids);
+    expect(result).toEqual({ chunks: 1, total: 300 });
+    expect(line.calls).toEqual(['unlink-bulk-300']);
+  });
+
+  it('500 超は分割', async () => {
+    const line = makeMockLineClient();
+    const ids = Array.from({ length: 1100 }, (_, i) => `U${i}`);
+    const result = await unlinkRichMenuBulkChunked(line, ids);
+    expect(result).toEqual({ chunks: 3, total: 1100 });
+    expect(line.calls).toEqual(['unlink-bulk-500', 'unlink-bulk-500', 'unlink-bulk-100']);
+  });
+
+  it('空配列は no-op（誰にも触らない）', async () => {
+    const line = makeMockLineClient();
+    const result = await unlinkRichMenuBulkChunked(line, []);
     expect(result).toEqual({ chunks: 0, total: 0 });
     expect(line.calls).toEqual([]);
   });

@@ -24,11 +24,13 @@ import {
   type UpdateRichMenuGroupMetaInput,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 import { validateRichMenuImage } from '../lib/image-validator.js';
 import {
   publishRichMenuGroup,
   unpublishRichMenuGroup,
   linkRichMenuBulkChunked,
+  unlinkRichMenuBulkChunked,
   type LineRichMenuClient,
   type R2Like,
   type GroupInput,
@@ -833,6 +835,18 @@ function createLineClient(channelAccessToken: string): LineRichMenuClient {
         throw new Error(`LINE linkRichMenuBulk failed: ${res.status} ${await res.text()}`);
       }
     },
+    async unlinkRichMenuBulk(userIds) {
+      // POST /v2/bot/richmenu/bulk/unlink  — 1 リクエスト最大 500 ユーザー
+      // 個別割り当てが無い人が混ざっていても LINE は成功を返す (冪等)。
+      const res = await fetch('https://api.line.me/v2/bot/richmenu/bulk/unlink', {
+        method: 'POST',
+        headers: { Authorization: auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userIds }),
+      });
+      if (!res.ok) {
+        throw new Error(`LINE unlinkRichMenuBulk failed: ${res.status} ${await res.text()}`);
+      }
+    },
   };
 }
 
@@ -1039,3 +1053,87 @@ richMenuGroups.post('/api/rich-menu-groups/:groupId/apply-to-tag', async (c) => 
     return c.json({ success: false, error: message }, 500);
   }
 });
+
+// ----- 個別割り当ての解除 (既存のお客様に新しいメニューを見せる) -----
+
+// LINE の仕様: 「ユーザー個別のリッチメニュー割り当て」は
+// 「アカウント全体のデフォルト」より優先される。
+// プロラインのような外部ツールが個別割り当てをしていると、こちらで
+// デフォルトを差し替えても、既に割り当てられている既存のお客様の画面は変わらない。
+// この API は個別割り当てだけを外す。外れた人はデフォルト (= 鈴木薬舗OS のメニュー)
+// を見るようになる。
+//
+// 破壊的ではない:
+//   - リッチメニュー本体は 1 つも削除しない
+//   - 元に戻すには apply-to-tag の bulk-link で割り当て直せばよい
+// ただし全お客様の画面が変わるため owner 限定。既定は dryRun (件数だけ返す)。
+//
+// POST /api/line-accounts/:accountId/rich-menu/unlink-all
+// body: { tagId?: string | null, dryRun?: boolean }   ※ dryRun 省略時は true
+richMenuGroups.post(
+  '/api/line-accounts/:accountId/rich-menu/unlink-all',
+  requireRole('owner'),
+  async (c) => {
+    const accountId = c.req.param('accountId');
+    if (!accountId) return c.json({ success: false, error: 'accountId required' }, 400);
+
+    let body: unknown = {};
+    try {
+      const raw = await c.req.text();
+      if (raw.trim()) body = JSON.parse(raw);
+    } catch {
+      return c.json({ success: false, error: 'invalid JSON body' }, 400);
+    }
+    const r = (body as { tagId?: unknown; dryRun?: unknown }) ?? {};
+    if (r.tagId !== null && r.tagId !== undefined && typeof r.tagId !== 'string') {
+      return c.json({ success: false, error: 'tagId must be string or null' }, 400);
+    }
+    if (r.dryRun !== undefined && typeof r.dryRun !== 'boolean') {
+      return c.json({ success: false, error: 'dryRun must be boolean' }, 400);
+    }
+    // 明示的に false を渡したときだけ実行する。事故防止のため既定は下見。
+    const dryRun = r.dryRun !== false;
+    const tagId = (r.tagId as string | null | undefined) ?? null;
+
+    const account = await getLineAccountById(c.env.DB, accountId);
+    if (!account) return c.json({ success: false, error: 'line account not found' }, 404);
+
+    const userIds = await getFollowingLineUserIdsByTag(c.env.DB, accountId, tagId);
+
+    if (dryRun) {
+      return c.json({
+        success: true,
+        data: {
+          dryRun: true,
+          total: userIds.length,
+          chunks: Math.ceil(userIds.length / 500),
+          message: `${userIds.length} 人の個別割り当てを解除します（まだ実行していません）`,
+        },
+      });
+    }
+
+    try {
+      const line = createLineClient(account.channel_access_token);
+      const currentDefault = await line.getCurrentDefaultRichMenuId();
+      if (!currentDefault) {
+        // デフォルトが無い状態で外すと、全員のメニューが消えて操作不能になる。
+        return c.json(
+          {
+            success: false,
+            error:
+              'アカウント全体のデフォルトメニューが未設定です。先にデフォルトを設定してください（解除するとメニューが消えてしまいます）',
+          },
+          409,
+        );
+      }
+      const result = await unlinkRichMenuBulkChunked(line, userIds);
+      return c.json({
+        success: true,
+        data: { dryRun: false, fallbackRichMenuId: currentDefault, ...result },
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      return c.json({ success: false, error: message }, 500);
+    }
+  },
+);

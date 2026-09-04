@@ -63,3 +63,56 @@
 - プロラインに生きているシナリオ・ステップ配信の総数。
 - OS 側 `scenarios` / `automations` テーブルの本番の中身の件数。
 - プロラインの契約・課金条件（解約可能時期など）。
+
+---
+
+## 5. OS 側の現状調査（2026-09-04、コード読みのみ・本番未確認）
+
+前提が変わった: **プロラインはチケットが切れたら終了**。つまり最終的に
+OS が全部を引き受ける。以下は「プロラインが無くなった日に困るか」で分類。
+
+### 5.1 すでに使える（移行の心配は小さい）
+
+| 機能 | 状態 | 根拠 |
+|---|---|---|
+| ステップ配信 | `scenarios.delivery_mode` に `relative` / `elapsed` / `absolute_time`。**「登録からN日後の10:00」が作れる**。管理画面あり | `packages/db/src/scenario-schedule.ts`, `apps/web/src/app/scenarios/**` |
+| 配信の停止条件 | 返信したら / 予約したら / 相談したら止める | `services/step-delivery.ts:308-362` |
+| 到達時のタグ付与 | ステップ単位で可。UIあり | `scenario-detail-client.tsx:720-739` |
+| 自動応答 | 完全一致 / 部分一致。**postback も同じ表で拾える**。UIあり | `routes/webhook.ts:431-503`, `auto-replies/page.tsx` |
+| 一斉配信 | 予約送信、500件ずつ分割、途中再開、二重送信ロック。UIあり | `services/broadcast.ts`, `routes/broadcasts.ts:424-430` |
+| 流入経路 | `entry_routes` にファネル集計（クリック→友だち追加→フォーム→CV）。UIあり | `packages/db/src/entry-routes.ts:193-`, `inflow-links/**` |
+| 予約 | 担当者・メニュー・シフト・祝日・リマインダ・決済ゲート・Zoom・Googleカレンダー | `routes/booking.ts`, `services/availability.ts` |
+
+### 5.2 動くが**画面が無い**（＝薬局が自分で使えない）
+
+ここが本丸。コードはあるので「無い」より軽いが、**画面が無い機能は無いのと同じ**。
+
+1. **タグ管理画面が存在しない。** 作成はフォームビルダーの中だけ。名前変更のAPIすら無い（`routes/tags.ts` は GET/POST/DELETE のみ）。
+2. **友だち情報欄（`friends.metadata`）が編集できない。** 表示のみ。`PUT /api/friends/:id/metadata` は動くが、フロントに呼び出しが無い。コード内に「編集UIができたら復活させる」というコメントあり（`friend-info-sidebar.tsx:244-248`）。
+3. **シナリオの分岐がUIに無い。** エンジンは `tag_exists` / `metadata_equals` などで分岐でき `next_step_on_false` も持つが、ステップ編集フォームに項目が無い。
+4. **オートメーションが生JSONのテキストエリア。** リッチメニュー切替（`switch_rich_menu`）もここにしか無い。実質、開発者専用。
+5. **セグメント配信のUIが繋がっていない。** `POST /api/broadcasts/:id/send-segment` と `segment-builder.tsx` は在るが、配信フォームから呼ばれていない。
+6. **フォーム→シナリオ登録（`on_submit_scenario_id`）にUIが無い。**
+
+### 5.3 プロライン終了で**自然に消える**問題
+
+- `external_bookings`（プロライン予約の手貼り取り込み）。現状は担当者が通知文を貼る運用で、貼り忘れ＝二重予約のリスク。プロラインが無くなれば取り込み自体が不要になる。
+
+### 5.4 直すべき危険
+
+- **`broadcasts` / `tags` / `friends` / `tracked-links` / `entry-routes` / `scoring` に `requireRole` が0件。** ログインさえ通れば、いちばん低い `staff` 権限でも**全員への一斉配信**ができる。
+- `routes/forms.ts:538` が `line_user_id` を `console.log`（PIIがCloudflareログに残る）。
+- キャンペーンリマインダ（`processReminderDeliveries`）に1回あたりの上限が無く N+1 クエリ。予約リマインダは事故を受けて100件/回に制限済みだが、こちらは未対応。
+- **ステージングが無い。** `main` push = 本番デプロイ＋本番マイグレーション自動適用。
+- マイグレーション番号が重複（009, 018, 037, 038, 041×3, 046）。適用順はファイル名のアルファベット順。
+
+### 5.5 一斉配信の差し込み
+
+`{{name}}` `{{metadata.KEY}}` などの差し込みは **ステップ配信にしか無い**
+（`services/step-delivery.ts:19-60`）。一斉配信は `{{liff_id}}` のみ。
+
+### 5.6 本番未確認（推測しないこと）
+
+- 本番D1に適用済みのマイグレーション（`SELECT name FROM _migrations`）。063 が未適用の可能性。
+- プロラインに生きているシナリオ・ステップ配信の本数。
+- 本番のリッチメニューが LIFF のどちらの予約画面を指しているか（`?page=book` と `?page=salon-book` の2系統がある）。

@@ -13,12 +13,18 @@ import {
 import { addTagToFriend, enrollFriendInScenario } from '@line-crm/db';
 import type { TrackedLink } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 import { isLinkPreviewBot } from '../lib/og-bot.js';
 import { buildOgHtml } from '../lib/og-html.js';
 import { resolveOgForTrackedLink } from '../lib/og-resolver.js';
 import { resolveTrackedLinkBaseUrl } from '../lib/link-base-url.js';
 
 const trackedLinks = new Hono<Env>();
+
+// 計測リンクはタグ付与とシナリオ登録を伴う。設定変更は owner / admin に限る。
+// 公開リダイレクト（GET /t/:id）は対象外。
+// 個々のハンドラではなくメソッド＋パスで一括してかけている（ハンドラの型が崩れないため）。
+trackedLinks.on(['POST', 'PUT', 'PATCH', 'DELETE'], ['/api/tracked-links', '/api/tracked-links/*'], requireRole('owner', 'admin'));
 
 function serializeTrackedLink(row: TrackedLink, baseUrl: string) {
   // Prefer the short code (baseUrl may be a branded short domain).

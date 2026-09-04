@@ -16,12 +16,26 @@ import {
 import type { LineClient, Message } from '@line-crm/line-sdk';
 import { addJitter, sleep } from './stealth.js';
 
+/**
+ * 1 回の cron で扱う友だちリマインダの上限。
+ *
+ * 予約リマインダ側は 2026-06 の取りこぼし事故のあと 100 件/回に制限された。
+ * こちらは長らく無制限で、登録者が増えると 1 tick で全員を舐めて
+ * Workers の実行時間を使い切る形になっていた。同じ理由で上限を設ける。
+ * あふれた分は 5 分後の tick が拾う（target_date の古い順なので放置されない）。
+ */
+const MAX_REMINDER_FRIENDS_PER_CRON = 40;
+
 export async function processReminderDeliveries(
   db: D1Database,
   lineClient: LineClient,
 ): Promise<void> {
   const now = jstNow();
-  const dueReminders = await getDueReminderDeliveries(db, now);
+  const dueReminders = await getDueReminderDeliveries(
+    db,
+    now,
+    MAX_REMINDER_FRIENDS_PER_CRON,
+  );
 
   for (let i = 0; i < dueReminders.length; i++) {
     const fr = dueReminders[i];

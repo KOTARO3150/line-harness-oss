@@ -13,8 +13,14 @@ import {
 } from '@line-crm/db';
 import type { TrafficPoolWithAccount, PoolAccountWithDetails } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const trafficPools = new Hono<Env>();
+
+// プールは友だち追加の振り分け先。設定変更は owner / admin に限る。
+// 公開リダイレクト（GET /pool/:slug）は対象外。
+// 個々のハンドラではなくメソッド＋パスで一括してかけている（ハンドラの型が崩れないため）。
+trafficPools.on(['POST', 'PUT', 'PATCH', 'DELETE'], ['/api/traffic-pools', '/api/traffic-pools/*'], requireRole('owner', 'admin'));
 
 function serialize(pool: TrafficPoolWithAccount) {
   return {

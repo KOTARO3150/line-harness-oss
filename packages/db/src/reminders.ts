@@ -119,18 +119,38 @@ export async function cancelFriendReminder(db: D1Database, id: string): Promise<
     .bind(jstNow(), id).run();
 }
 
-/** リマインダ配信処理用: 配信が必要な友だちリマインダを取得 */
-export async function getDueReminderDeliveries(db: D1Database, now: string): Promise<Array<FriendReminderRow & { steps: ReminderStepRow[] }>> {
+/**
+ * リマインダ配信処理用: 配信が必要な友だちリマインダを取得。
+ *
+ * limit を渡すと、その件数だけ集めた時点で走査を打ち切る。1 回の cron で
+ * 全登録者を舐めると Workers の実行時間を使い切ってしまうため、呼出側は
+ * 必ず上限を渡すこと（残りは次の tick が拾う）。
+ *
+ * target_date の古い順に見るので、打ち切っても後回しにされ続ける人は出ない。
+ * ステップ定義は同じリマインダを共有する登録者どうしで使い回す（N+1 の緩和）。
+ */
+export async function getDueReminderDeliveries(
+  db: D1Database,
+  now: string,
+  limit?: number,
+): Promise<Array<FriendReminderRow & { steps: ReminderStepRow[] }>> {
   // activeなリマインダ登録を取得
   const activeReminders = await db
     .prepare(`SELECT fr.* FROM friend_reminders fr
               INNER JOIN reminders r ON r.id = fr.reminder_id
-              WHERE fr.status = 'active' AND r.is_active = 1`)
+              WHERE fr.status = 'active' AND r.is_active = 1
+              ORDER BY fr.target_date ASC`)
     .all<FriendReminderRow>();
 
+  const stepsByReminderId = new Map<string, ReminderStepRow[]>();
   const results: Array<FriendReminderRow & { steps: ReminderStepRow[] }> = [];
   for (const fr of activeReminders.results) {
-    const steps = await getReminderSteps(db, fr.reminder_id);
+    if (limit !== undefined && results.length >= limit) break;
+    let steps = stepsByReminderId.get(fr.reminder_id);
+    if (!steps) {
+      steps = await getReminderSteps(db, fr.reminder_id);
+      stepsByReminderId.set(fr.reminder_id, steps);
+    }
     // 配信済みステップを取得
     const delivered = await db
       .prepare(`SELECT reminder_step_id FROM friend_reminder_deliveries WHERE friend_reminder_id = ?`)

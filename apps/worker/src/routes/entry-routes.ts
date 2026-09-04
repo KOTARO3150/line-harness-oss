@@ -9,8 +9,13 @@ import {
 } from '@line-crm/db';
 import type { EntryRoute } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const entryRoutes = new Hono<Env>();
+
+// 流入経路は友だち追加時のタグ・シナリオ・あいさつを決める。設定変更は owner / admin に限る。
+// 個々のハンドラではなくメソッド＋パスで一括してかけている（ハンドラの型が崩れないため）。
+entryRoutes.on(['POST', 'PUT', 'PATCH', 'DELETE'], ['/api/entry-routes', '/api/entry-routes/*'], requireRole('owner', 'admin'));
 
 function serialize(row: EntryRoute) {
   return {

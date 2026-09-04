@@ -14,8 +14,14 @@ import { processSegmentSend } from '../services/segment-send.js';
 import type { SegmentCondition } from '../services/segment-query.js';
 import { getLineAccountById } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const broadcasts = new Hono<Env>();
+
+// 一斉配信はお客様全員に届き、送信後は取り消せない。作成・編集・送信は owner / admin に限る。
+// 閲覧（GET）と宛先件数の見積もり（/api/segments/count）は担当者全員に開けたまま。
+// 個々のハンドラではなくメソッド＋パスで一括してかけている（ハンドラの型が崩れないため）。
+broadcasts.on(['POST', 'PUT', 'PATCH', 'DELETE'], ['/api/broadcasts', '/api/broadcasts/*'], requireRole('owner', 'admin'));
 
 /**
  * Parse a D1 JSON-array column. Returns:

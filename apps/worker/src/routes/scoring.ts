@@ -10,8 +10,13 @@ import {
   addScore,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const scoring = new Hono<Env>();
+
+// スコアはシナリオの起動条件になりうるので、ルール変更と手動加点は owner / admin に限る。
+// 個々のハンドラではなくメソッド＋パスで一括してかけている（ハンドラの型が崩れないため）。
+scoring.on(['POST', 'PUT', 'PATCH', 'DELETE'], ['/api/scoring-rules', '/api/scoring-rules/*', '/api/friends/:id/score'], requireRole('owner', 'admin'));
 
 // ========== スコアリングルールCRUD ==========
 

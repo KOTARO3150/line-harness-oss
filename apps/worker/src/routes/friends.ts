@@ -14,6 +14,7 @@ import type { Friend as DbFriend, Tag as DbTag } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage } from '../services/step-delivery.js';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const friends = new Hono<Env>();
 
@@ -473,10 +474,25 @@ friends.delete('/api/friends/:id/tags/:tagId', async (c) => {
   }
 });
 
-// PUT /api/friends/:id/metadata - merge metadata fields
-friends.put('/api/friends/:id/metadata', async (c) => {
+/**
+ * 友だち情報欄（friends.metadata）の 1 件あたりの上限。
+ * 相談メモのような長文はカルテ側に書くもので、ここは短い属性のための欄。
+ */
+const METADATA_MAX_KEY_LENGTH = 64;
+const METADATA_MAX_VALUE_LENGTH = 1000;
+const METADATA_MAX_KEYS = 100;
+
+// PUT /api/friends/:id/metadata — 友だち情報欄の追加・更新・削除。
+//
+// 送られたキーだけをマージする（送らなかったキーは残る）。
+// **値に null を入れるとそのキーを削除する** — 打ち間違えたキーを消す手段が
+// 無いと、ゴミが一生残ってしまうため。
+//
+// 氏名・体質・服薬などが入りうるので、書き換えは owner / admin のみ。
+friends.put('/api/friends/:id/metadata', requireRole('owner', 'admin'), async (c) => {
   try {
     const friendId = c.req.param('id');
+    if (!friendId) return c.json({ success: false, error: 'id required' }, 400);
     const db = c.env.DB;
 
     const friend = await getFriendById(db, friendId);
@@ -485,8 +501,60 @@ friends.put('/api/friends/:id/metadata', async (c) => {
     }
 
     const body = await c.req.json<Record<string, unknown>>();
-    const existing = JSON.parse(friend.metadata || '{}');
-    const merged = { ...existing, ...body };
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return c.json({ success: false, error: 'body must be an object' }, 400);
+    }
+
+    for (const [key, value] of Object.entries(body)) {
+      const trimmed = key.trim();
+      if (!trimmed) {
+        return c.json({ success: false, error: '項目名を入れてください' }, 400);
+      }
+      if (trimmed.length > METADATA_MAX_KEY_LENGTH) {
+        return c.json(
+          { success: false, error: `項目名は${METADATA_MAX_KEY_LENGTH}文字までです` },
+          400,
+        );
+      }
+      if (value !== null && typeof value === 'object') {
+        return c.json(
+          { success: false, error: `「${trimmed}」の値は文字列か数値にしてください` },
+          400,
+        );
+      }
+      if (typeof value === 'string' && value.length > METADATA_MAX_VALUE_LENGTH) {
+        return c.json(
+          {
+            success: false,
+            error: `「${trimmed}」の値は${METADATA_MAX_VALUE_LENGTH}文字までです。長い内容は相談カルテへ`,
+          },
+          400,
+        );
+      }
+    }
+
+    let existing: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(friend.metadata || '{}');
+      existing = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      // 壊れた JSON が入っていても編集不能にはしない。空から作り直す。
+      existing = {};
+    }
+
+    const merged: Record<string, unknown> = { ...existing };
+    for (const [key, value] of Object.entries(body)) {
+      const trimmed = key.trim();
+      if (value === null) delete merged[trimmed];
+      else merged[trimmed] = value;
+    }
+
+    if (Object.keys(merged).length > METADATA_MAX_KEYS) {
+      return c.json(
+        { success: false, error: `項目は${METADATA_MAX_KEYS}件までです` },
+        400,
+      );
+    }
     const now = jstNow();
 
     await db

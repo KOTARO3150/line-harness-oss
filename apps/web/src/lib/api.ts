@@ -157,6 +157,25 @@ export type FriendListParams = {
   handled?: 'unhandled'
 }
 
+/** タグがどこから参照されているかの件数。0 でない項目は、消すと設定が無効になる。 */
+export interface TagUsage {
+  friends: number
+  scenarioTriggers: number
+  scenarioSteps: number
+  forms: number
+  entryRoutes: number
+  trackedLinks: number
+  bookingMenus: number
+  affiliateOffers: number
+  broadcasts: number
+}
+
+export type TagWithUsage = Tag & {
+  usage: TagUsage
+  /** friends を除いた参照数。0 なら消しても自動化は壊れない。 */
+  automationRefs: number
+}
+
 export type FriendWithTags = Friend & { tags: Tag[] }
 /** Friend list items, optionally hydrated with chat status (when ?includeChatStatus=true) */
 export type FriendListItem = FriendWithTags & Partial<{
@@ -202,17 +221,44 @@ export const api = {
       fetchApi<ApiResponse<{ id: string | null; name: string | null; isDefault: boolean }>>(
         `/api/friends/${id}/rich-menu`,
       ),
+    /**
+     * 友だち情報欄の追加・更新・削除。
+     * 送った項目だけがマージされる（送らなかった項目は残る）。
+     * **値に null を渡すとその項目を削除する。**
+     */
+    updateMetadata: (id: string, patch: Record<string, string | number | null>) =>
+      fetchApi<ApiResponse<FriendWithTags>>(`/api/friends/${id}/metadata`, {
+        method: 'PUT',
+        body: JSON.stringify(patch),
+      }),
   },
   tags: {
     list: () =>
       fetchApi<ApiResponse<Tag[]>>('/api/tags'),
+    /** タグ管理画面用。どこから参照されているかの件数つき。 */
+    listWithUsage: () =>
+      fetchApi<ApiResponse<TagWithUsage[]>>('/api/tags?withUsage=1'),
     create: (data: { name: string; color: string }) =>
       fetchApi<ApiResponse<Tag>>('/api/tags', {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    delete: (id: string) =>
-      fetchApi<ApiResponse<null>>(`/api/tags/${id}`, { method: 'DELETE' }),
+    /** 名前・色の変更。id は変わらないので既存の紐づけは切れない。 */
+    update: (id: string, data: { name?: string; color?: string }) =>
+      fetchApi<ApiResponse<Tag>>(`/api/tags/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    /**
+     * 参照が残っているタグは既定で 409（本文に参照先の内訳が入る）。
+     * 消すとシナリオの起動条件などが黙って無効になるため、
+     * 画面で内訳を見せて納得したうえで force を渡すこと。
+     */
+    delete: (id: string, opts?: { force?: boolean }) =>
+      fetchApi<ApiResponse<null>>(
+        `/api/tags/${id}${opts?.force ? '?force=1' : ''}`,
+        { method: 'DELETE' },
+      ),
   },
   scenarios: {
     list: (params?: { accountId?: string }) => {

@@ -226,30 +226,172 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName }
               )}
             </div>
 
-            {/* Metadata custom fields */}
-            {friend.metadata && Object.keys(friend.metadata).length > 0 && (
-              <div className="p-4">
-                <h4 className="text-[11px] font-medium text-gray-500 mb-2">友だち情報</h4>
-                <dl className="space-y-2 text-xs">
-                  {Object.entries(friend.metadata).map(([key, value]) => (
-                    <div key={key}>
-                      <dt className="text-[10px] text-gray-400 uppercase tracking-wide">{key}</dt>
-                      <dd className="text-gray-700 mt-0.5 whitespace-pre-wrap break-words">{renderValue(value)}</dd>
-                    </div>
-                  ))}
-                </dl>
-              </div>
-            )}
-
-            {/*
-              編集導線は将来追加予定 (現在の /friends は ?id= をハンドルしないため、
-              リンク先が機能しない → Codex review で指摘済 → 代わりに削除。
-              編集 UI が出来たら復活させる)。
-            */}
+            {/* 友だち情報欄 — 表示と編集。プロラインの「友だち情報欄」の受け皿。 */}
+            <FriendMetadataPanel
+              friendId={friend.id}
+              metadata={friend.metadata ?? {}}
+              onChange={(next) => setFriend({ ...friend, metadata: next })}
+            />
           </div>
         ) : (
           <div className="p-4 text-xs text-gray-400">友だち情報がありません</div>
         )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * 友だち情報欄（friends.metadata）の表示と編集。
+ *
+ * 体質・服薬・来店きっかけなど、お客様ごとの短い属性を置く場所。
+ * プロラインの「友だち情報欄」に当たる。長い相談内容は相談カルテ側に書く。
+ *
+ * 保存は「送った項目だけマージ」なので、他の担当者が同時に別の項目を足しても
+ * 打ち消し合わない。項目を消すときは値に null を送る。
+ *
+ * 書き換えは owner / admin のみ（API 側で 403）。staff には編集ボタンを出しても
+ * 押した時点で断られるだけなので、403 が返ったらその旨を表示する。
+ */
+function FriendMetadataPanel({
+  friendId,
+  metadata,
+  onChange,
+}: {
+  friendId: string
+  metadata: Record<string, unknown>
+  onChange: (next: Record<string, unknown>) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [rows, setRows] = useState<{ key: string; value: string }[]>([])
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const entries = Object.entries(metadata)
+
+  const startEditing = () => {
+    setRows(entries.map(([key, value]) => ({ key, value: renderValue(value) === '-' ? '' : renderValue(value) })))
+    setError(null)
+    setEditing(true)
+  }
+
+  const save = async () => {
+    setSaving(true)
+    setError(null)
+    try {
+      // 送る差分を組み立てる。消えた項目・空にした項目は null を送って削除する。
+      const patch: Record<string, string | null> = {}
+      const keptKeys = new Set<string>()
+      for (const row of rows) {
+        const key = row.key.trim()
+        if (!key) continue
+        keptKeys.add(key)
+        const value = row.value.trim()
+        if (value === '') patch[key] = null
+        else if (renderValue(metadata[key]) !== value || !(key in metadata)) patch[key] = value
+      }
+      for (const key of Object.keys(metadata)) {
+        if (!keptKeys.has(key)) patch[key] = null
+      }
+
+      if (Object.keys(patch).length === 0) {
+        setEditing(false)
+        return
+      }
+
+      const res = await api.friends.updateMetadata(friendId, patch)
+      if (!res.success) {
+        setError((res as { error?: string }).error ?? '保存に失敗しました')
+        return
+      }
+      onChange((res.data as unknown as FriendDetail).metadata ?? {})
+      setEditing(false)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setError(/403/.test(message) ? 'この操作にはオーナー権限が必要です' : '保存に失敗しました')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!editing) {
+    return (
+      <div className="p-4">
+        <div className="flex items-center justify-between mb-2">
+          <h4 className="text-[11px] font-medium text-gray-500">友だち情報</h4>
+          <button onClick={startEditing} className="text-[11px] text-blue-600 hover:underline">
+            編集
+          </button>
+        </div>
+        {entries.length === 0 ? (
+          <p className="text-[11px] text-gray-400 italic">まだ項目がありません</p>
+        ) : (
+          <dl className="space-y-2 text-xs">
+            {entries.map(([key, value]) => (
+              <div key={key}>
+                <dt className="text-[10px] text-gray-400 tracking-wide">{key}</dt>
+                <dd className="text-gray-700 mt-0.5 whitespace-pre-wrap break-words">{renderValue(value)}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="p-4">
+      <h4 className="text-[11px] font-medium text-gray-500 mb-2">友だち情報を編集</h4>
+      {error && <p className="text-[11px] text-red-600 mb-2">{error}</p>}
+      <div className="space-y-2">
+        {rows.map((row, i) => (
+          <div key={i} className="flex gap-1.5 items-start">
+            <input
+              value={row.key}
+              onChange={(e) => setRows(rows.map((r, j) => (j === i ? { ...r, key: e.target.value } : r)))}
+              placeholder="項目名"
+              className="w-2/5 px-2 py-1 border border-gray-300 rounded text-[11px]"
+            />
+            <input
+              value={row.value}
+              onChange={(e) => setRows(rows.map((r, j) => (j === i ? { ...r, value: e.target.value } : r)))}
+              placeholder="値（空にすると削除）"
+              className="flex-1 px-2 py-1 border border-gray-300 rounded text-[11px]"
+            />
+            <button
+              onClick={() => setRows(rows.filter((_, j) => j !== i))}
+              className="px-1.5 py-1 text-[11px] text-gray-400 hover:text-red-600"
+              aria-label="この項目を消す"
+            >
+              ×
+            </button>
+          </div>
+        ))}
+      </div>
+      <button
+        onClick={() => setRows([...rows, { key: '', value: '' }])}
+        className="mt-2 text-[11px] text-blue-600 hover:underline"
+      >
+        + 項目を追加
+      </button>
+      <p className="mt-2 text-[10px] text-gray-400">
+        長い相談内容は相談カルテへ。ここは短い属性（体質・服薬・来店きっかけなど）のための欄です。
+      </p>
+      <div className="mt-3 flex gap-2">
+        <button
+          onClick={save}
+          disabled={saving}
+          className="px-3 py-1.5 text-[11px] font-medium text-white rounded disabled:opacity-50"
+          style={{ backgroundColor: '#06C755' }}
+        >
+          {saving ? '保存中...' : '保存'}
+        </button>
+        <button
+          onClick={() => { setEditing(false); setError(null) }}
+          className="px-3 py-1.5 text-[11px] text-gray-600 border border-gray-300 rounded"
+        >
+          やめる
+        </button>
       </div>
     </div>
   )

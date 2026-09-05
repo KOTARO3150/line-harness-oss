@@ -1,5 +1,10 @@
 import { jstNow } from './utils.js';
-export type BroadcastTargetType = 'all' | 'tag' | 'multi-account-dedup';
+/**
+ * 'segment' は条件の組み合わせ（タグあり/なし・友だち情報欄の一致など）で宛先を絞る指定。
+ * DB の CHECK には以前から入っていたが、型と作成 API に無かったため画面から選べなかった。
+ * 送信は必ず cron のキュー経路（segment_conditions を読んで宛先を引く）に回る。
+ */
+export type BroadcastTargetType = 'all' | 'tag' | 'segment' | 'multi-account-dedup';
 export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent';
 export type BroadcastMessageType = 'text' | 'image' | 'flex';
 
@@ -85,6 +90,8 @@ export interface CreateBroadcastInput {
   accountIds?: string[];
   dedupPriority?: string[];
   trackLinks?: boolean;
+  /** targetType='segment' のときの絞り込み条件。JSON 文字列で保存する。 */
+  segmentConditions?: string | null;
 }
 
 export async function createBroadcast(
@@ -99,8 +106,8 @@ export async function createBroadcast(
   await db
     .prepare(
       `INSERT INTO broadcasts
-         (id, title, message_type, message_content, target_type, target_tag_id, status, scheduled_at, sent_at, total_count, success_count, account_ids, dedup_priority, track_links, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?, ?, ?, ?)`,
+         (id, title, message_type, message_content, target_type, target_tag_id, status, scheduled_at, sent_at, total_count, success_count, account_ids, dedup_priority, track_links, segment_conditions, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, 0, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -114,6 +121,7 @@ export async function createBroadcast(
       input.accountIds ? JSON.stringify(input.accountIds) : null,
       input.dedupPriority ? JSON.stringify(input.dedupPriority) : null,
       input.trackLinks === false ? 0 : 1,
+      input.segmentConditions ?? null,
       now,
     )
     .run();

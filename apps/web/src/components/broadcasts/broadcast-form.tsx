@@ -7,6 +7,7 @@ import { useAccount } from '@/contexts/account-context'
 import FlexPreviewComponent from '@/components/flex-preview'
 import ImageUploader from '@/components/shared/image-uploader'
 import MultiAccountDedupSection from './multi-account-dedup-section'
+import SegmentBuilder from './segment-builder'
 
 interface BroadcastFormProps {
   tags: Tag[]
@@ -31,7 +32,12 @@ interface FormState {
   accountIds: string[]
   dedupPriority: string[]
   trackLinks: boolean
+  /** targetType='segment' のときの絞り込み条件 */
+  segmentConditions: { operator: 'AND' | 'OR'; rules: unknown[] } | null
 }
+
+/** {{name}} などの差し込みが本文に入っているか（宛先の選び方を制限するため） */
+const PERSONALIZATION_RE = /\{\{(name|uid|friend_id|ref)\}\}|\{\{#if_ref\}\}|\{\{metadata\.[^}]+\}\}|\{\{#if_metadata\.[^}]+\}\}/
 
 export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFormProps) {
   const { selectedAccountId } = useAccount()
@@ -57,7 +63,9 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
     accountIds: [],
     dedupPriority: [],
     trackLinks: true,
+    segmentConditions: null,
   })
+  const [showSegmentBuilder, setShowSegmentBuilder] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -74,6 +82,22 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
     if (form.targetType === 'multi-account-dedup' && form.accountIds.length === 0) {
       setError('複数アカ重複除外: 配信先アカウントを 1 つ以上選択してください')
       return
+    }
+    if (form.targetType === 'segment' && (form.segmentConditions?.rules.length ?? 0) === 0) {
+      setError('絞り込み条件を1つ以上指定してください')
+      return
+    }
+    // 差し込みは 1 人ずつ送る必要があるため、宛先を列挙できない配信では使えない。
+    // 生の {{name}} がお客様に届く前に、ここで止める。
+    if (PERSONALIZATION_RE.test(form.messageContent)) {
+      if (form.targetType === 'all') {
+        setError('{{name}} などの差し込みは「全員」宛てでは使えません。タグか条件で宛先を指定してください')
+        return
+      }
+      if (form.targetType === 'multi-account-dedup') {
+        setError('{{name}} などの差し込みは、複数アカ重複除外ではまだ使えません')
+        return
+      }
     }
 
     setSaving(true)
@@ -96,6 +120,7 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
         accountIds: form.targetType === 'multi-account-dedup' ? form.accountIds : undefined,
         dedupPriority: form.targetType === 'multi-account-dedup' ? form.dedupPriority : undefined,
         trackLinks: form.trackLinks,
+        segmentConditions: form.targetType === 'segment' ? form.segmentConditions : null,
         // datetime-local returns YYYY-MM-DDTHH:mm in JST wall-clock time
         // Append +09:00 so new Date() parses correctly for epoch comparisons
         scheduledAt: form.sendNow || !form.scheduledAt
@@ -240,6 +265,27 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
           {form.messageType === 'image' && (
             <p className="text-xs text-gray-400 mt-1">上のURLフォームか、直接JSONを編集できます</p>
           )}
+          {form.messageType !== 'image' && (
+            <p className="text-xs text-gray-400 mt-1">
+              <button
+                type="button"
+                onClick={() =>
+                  setForm((prev) => ({ ...prev, messageContent: `${prev.messageContent}{{name}}` }))
+                }
+                className="text-blue-600 hover:underline"
+              >
+                {'{{name}}'}
+              </button>
+              {' でお名前を差し込めます（'}
+              {'{{metadata.項目名}}'}
+              {' で友だち情報欄も）。差し込みを使うと1人ずつ送るため、宛先はタグか条件で指定してください'}
+            </p>
+          )}
+          {PERSONALIZATION_RE.test(form.messageContent) && form.targetType === 'all' && (
+            <p className="text-xs text-amber-700 mt-1">
+              いまの宛先「全員」では差し込みが使えません。タグか条件で絞り込んでください
+            </p>
+          )}
           {form.messageType === 'flex' && form.messageContent && (() => {
             try { JSON.parse(form.messageContent); return true } catch { return false }
           })() && (
@@ -295,6 +341,17 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
             </button>
             <button
               type="button"
+              onClick={() => { setForm({ ...form, targetType: 'segment', targetTagId: '' }); setShowSegmentBuilder(true) }}
+              className={`px-3 py-1.5 min-h-[44px] text-xs font-medium rounded-md border transition-colors ${
+                form.targetType === 'segment'
+                  ? 'border-green-500 text-green-700 bg-green-50'
+                  : 'border-gray-300 text-gray-600 bg-white hover:border-gray-400'
+              }`}
+            >
+              条件で絞り込み
+            </button>
+            <button
+              type="button"
               onClick={() => setForm({ ...form, targetType: 'multi-account-dedup', targetTagId: '' })}
               className={`px-3 py-1.5 min-h-[44px] text-xs font-medium rounded-md border transition-colors ${
                 form.targetType === 'multi-account-dedup'
@@ -316,6 +373,37 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
                 <option key={tag.id} value={tag.id}>{tag.name}</option>
               ))}
             </select>
+          )}
+          {form.targetType === 'segment' && (
+            showSegmentBuilder ? (
+              <SegmentBuilder
+                tags={tags}
+                accountId={selectedAccountId || null}
+                initialConditions={
+                  form.segmentConditions as React.ComponentProps<typeof SegmentBuilder>['initialConditions']
+                }
+                onApply={(conditions) => {
+                  setForm({ ...form, segmentConditions: conditions })
+                  setShowSegmentBuilder(false)
+                }}
+                onCancel={() => setShowSegmentBuilder(false)}
+              />
+            ) : (
+              <div className="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+                <span className="text-xs text-gray-700">
+                  {form.segmentConditions
+                    ? `条件 ${form.segmentConditions.rules.length} 件（${form.segmentConditions.operator === 'AND' ? 'すべて満たす' : 'いずれか満たす'}）`
+                    : '条件が未設定です'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowSegmentBuilder(true)}
+                  className="text-xs text-blue-600 hover:underline"
+                >
+                  条件を編集
+                </button>
+              </div>
+            )
           )}
           {form.targetType === 'multi-account-dedup' && (
             <MultiAccountDedupSection

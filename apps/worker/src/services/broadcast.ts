@@ -367,6 +367,60 @@ async function processQueuedBroadcastBatches(
   let currentOffset = batchOffset;
   const totalBatches = Math.ceil(friends.length / MULTICAST_BATCH_SIZE);
 
+  // ---- 差し込みあり: 1 人ずつ push ----
+  //
+  // multicast は 1 リクエストで全員に同じ本文を送る仕組みなので、{{name}} のような
+  // 宛先ごとに変わる差し込みは原理的に載せられない。含まれているときだけ push に切り替える。
+  // 送信回数は人数ぶんに増えるため、時間切れになったらそこまでの進捗を保存して次の tick に回す。
+  const { hasPersonalization, loadPersonalizableFriends, sendPersonalized } = await import(
+    './broadcast-personalization.js'
+  );
+  if (hasPersonalization(finalContent)) {
+    const remaining = friends.slice(currentOffset);
+    const loaded = await loadPersonalizableFriends(db, remaining.map((f) => f.id));
+    const result = await sendPersonalized(
+      lineClient,
+      loaded,
+      (expanded) => buildMessage(finalType, expanded, altText || undefined),
+      finalContent,
+      { workerUrl, messageType: finalType },
+    );
+
+    if (result.sentFriendIds.length > 0) {
+      try {
+        const stmts = result.sentFriendIds.map((friendId) =>
+          db.prepare(
+            `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
+             VALUES (?, ?, 'outgoing', ?, ?, ?, NULL, 'broadcast', ?, ?)`,
+          ).bind(crypto.randomUUID(), friendId, broadcast.message_type, broadcast.message_content, broadcast.id, queuedAccountId, now),
+        );
+        await db.batch(stmts);
+      } catch (logErr) {
+        console.error('Personalized broadcast log failed (messages already sent):', logErr);
+      }
+    }
+    if (result.failed.length > 0) {
+      console.error(
+        `Personalized broadcast ${broadcast.id}: ${result.failed.length} recipients failed`,
+      );
+    }
+
+    // 送れなかった人は飛ばして進める。同じ人で毎 tick 止まり続けないようにするため。
+    const advanced = currentOffset + result.sentFriendIds.length + result.failed.length;
+    if (result.ranOutOfTime) {
+      await updateBroadcastBatchProgress(db, broadcast.id, advanced, result.sentFriendIds.length);
+      return;
+    }
+    await updateBroadcastBatchProgress(db, broadcast.id, advanced, result.sentFriendIds.length);
+    await createBroadcastInsight(db, broadcast.id);
+    await updateBroadcastStatus(db, broadcast.id, 'sent', {
+      totalCount: friends.length,
+      successCount: undefined,
+    });
+    return;
+  }
+
+  // ---- 差し込みなし: 従来どおり multicast ----
   // 1回のCron実行で全バッチを処理（タイムアウトしない範囲で）
   while (currentOffset < friends.length) {
     const batch = friends.slice(currentOffset, currentOffset + MULTICAST_BATCH_SIZE);

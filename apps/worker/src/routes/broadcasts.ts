@@ -279,6 +279,8 @@ broadcasts.post('/api/broadcasts', async (c) => {
       accountIds?: string[];
       dedupPriority?: string[];
       trackLinks?: boolean;
+      /** targetType='segment' のときの絞り込み条件（オブジェクト。保存時に JSON 化する）。 */
+      segmentConditions?: { operator?: string; rules?: unknown[] } | null;
     }>();
 
     if (!body.title || !body.messageType || !body.messageContent || !body.targetType) {
@@ -293,6 +295,17 @@ broadcasts.post('/api/broadcasts', async (c) => {
         { success: false, error: 'targetTagId is required when targetType is "tag"' },
         400,
       );
+    }
+
+    // segment: 条件が無いと宛先ゼロのまま送信できてしまうので、作成時点で弾く。
+    if (body.targetType === 'segment') {
+      const cond = body.segmentConditions as { rules?: unknown[] } | undefined;
+      if (!cond || !Array.isArray(cond.rules) || cond.rules.length === 0) {
+        return c.json(
+          { success: false, error: '絞り込み条件を1つ以上指定してください' },
+          400,
+        );
+      }
     }
 
     if (body.targetType === 'multi-account-dedup') {
@@ -317,6 +330,10 @@ broadcasts.post('/api/broadcasts', async (c) => {
       accountIds: body.accountIds,
       dedupPriority: body.dedupPriority,
       trackLinks: body.trackLinks,
+      segmentConditions:
+        body.targetType === 'segment' && body.segmentConditions
+          ? JSON.stringify(body.segmentConditions)
+          : null,
     });
 
     // Save line_account_id and alt_text if provided
@@ -443,6 +460,35 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
       return c.json({ success: false, error: 'Broadcast not found' }, 404);
     }
 
+    // ---- 差し込み ({{name}} など) の扱い ----
+    //
+    // LINE の multicast / broadcast API は 1 リクエストで全員に同じ本文を送る仕組みで、
+    // 宛先ごとの差し替えができない。差し込みを載せるには 1 人ずつ push するしかないので、
+    // それが成立しない宛先指定は、生の {{name}} をお客様に送ってしまう前にここで断る。
+    const { hasPersonalization } = await import('../services/broadcast-personalization.js');
+    const personalized = hasPersonalization(existing.message_content);
+    if (personalized) {
+      if (existing.target_type === 'all') {
+        return c.json(
+          {
+            success: false,
+            error:
+              '「全員」宛ての配信では {{name}} などの差し込みが使えません。タグで宛先を指定してください',
+          },
+          400,
+        );
+      }
+      if (existing.target_type === 'multi-account-dedup') {
+        return c.json(
+          {
+            success: false,
+            error: '複数アカウントの重複除外配信では、まだ差し込みが使えません',
+          },
+          400,
+        );
+      }
+    }
+
     // multi-account-dedup は常にキュー方式 — Worker の30秒制限を超えるため
     if (existing.target_type === 'multi-account-dedup') {
       // Always queue — never run inline. The executor walks per-account multicast
@@ -505,13 +551,36 @@ broadcasts.post('/api/broadcasts/:id/send', async (c) => {
       }, 202);
     }
 
+    // segment は条件から宛先を引く必要があり、その処理はキュー経路
+    // (processQueuedBroadcastBatches) にしかない。人数によらず必ずキューに回す。
+    if (existing.target_type === 'segment') {
+      const lockResult = await c.env.DB.prepare(
+        `UPDATE broadcasts SET status = 'sending', batch_offset = 0 WHERE id = ? AND status IN ('draft','scheduled')`,
+      ).bind(id).run();
+      if (!lockResult.meta.changes) {
+        return c.json({ success: false, error: 'Broadcast is already sent or sending' }, 409);
+      }
+      const result = await getBroadcastById(c.env.DB, id);
+      return c.json(
+        {
+          success: true,
+          data: result ? serializeBroadcast(result) : null,
+          queued: true,
+          message: 'Broadcast queued for batch processing by Cron',
+        },
+        202,
+      );
+    }
+
     // target_type='tag' で対象が多い場合はキュー方式
     if (existing.target_type === 'tag' && existing.target_tag_id) {
       const { getFriendsByTag } = await import('@line-crm/db');
       const friends = await getFriendsByTag(c.env.DB, existing.target_tag_id);
       const followingCount = friends.filter(f => f.is_following).length;
 
-      if (followingCount > 500) {
+      // 差し込みありは 1 人ずつ push するので、人数が少なくても HTTP 応答内に収まらない。
+      // 必ずキューに回して cron に分割送信させる。
+      if (followingCount > 500 || personalized) {
         // Atomic lock: status='draft'|'scheduled' のときだけ status='sending' に遷移
         const tagMarker = JSON.stringify({ operator: 'AND', rules: [{ type: 'tag_exists', value: existing.target_tag_id }] });
         const lockResult = await c.env.DB.prepare(

@@ -379,6 +379,8 @@ export const api = {
       accountIds?: string[]
       dedupPriority?: string[]
       trackLinks?: boolean
+      /** targetType='segment' のときの絞り込み条件 */
+      segmentConditions?: { operator: 'AND' | 'OR'; rules: unknown[] } | null
     }) =>
       fetchApi<ApiResponse<ApiBroadcast>>('/api/broadcasts', {
         method: 'POST',

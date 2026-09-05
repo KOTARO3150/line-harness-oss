@@ -9,26 +9,44 @@
 
 ## 1. いまの状態
 
-- ブランチ: `agent/external-booking-conflict`（`main` ではない）
-- **本番には何も出していない。** main へのマージ = 自動デプロイ。
-- worker 787 / db 145 / 管理画面 62 テスト通過。`tsc --noEmit` clean。管理画面ビルド成功。
-- **①〜④の作り込みは完了。次は「本番に出して実機で試す」段階。**
+- **`main` にマージ済み。まだ push していないので本番は無変更。**
+- `main` = `3417352`（`215c8cd` ＋ リモート main とのマージ）
+- 作業ツリーはクリーン、`git fsck` 健全、リモート main は祖先（fast-forward で push できる）
+- worker 793 / db 145 / 管理画面 62 テスト通過。`tsc --noEmit` clean。管理画面ビルド成功。
 
-### このブランチに積んであるもの（新しい順）
+### push すると起きること
 
-| commit | 内容 |
+| | |
 |---|---|
-| `ee9035d` | ④ 一斉配信の差し込み（{{name}} 等）＋セグメント配信のUI接続 |
-| `d22454e` | ③後半 オートメーションの選択式化（既存JSONは非変換・フォールバック付き） |
-| `d953304` | ③前半 シナリオの分岐UI ＋ スタッフの権限変更UI |
-| `788bfac` | ② 権限ガード・PIIログ削除・リマインダ40件/tick制限 |
-| `a8beed3` | ① タグ管理画面 `/tags` ＋ 友だち情報欄の編集 |
-| `1657bcd` `d18e780` `22e940c` `f71c13f` | 調査・方針・引き継ぎのドキュメント |
-| `8096625` | `POST /api/line-accounts/:id/rich-menu/unlink-all`（個別割り当ての一括解除） |
+| コミット | 20 |
+| ファイル | 112（+10,075 / -379） |
+| 新たに当たるマイグレーション | **055〜063 の 9 本**（053・054 はリモート main に既にある） |
 
-読む順番: `RESUME.md`（これ） → `MIGRATION-proline-to-os.md` → `HANDOVER-2026-09-02-claude.md`
+`main` への push で GitHub Actions が動き、**マイグレーション適用 → ビルド → 本番デプロイ**の順に走る。
+マイグレーションは `_migrations` テーブルと突き合わせて未適用のものだけ当てる。
+どれかが失敗すればそこで job が止まり、**コードのデプロイまで進まない**（＝本番は無変更のまま）。
 
----
+### push コマンド（KOTA の端末から。Claude 側の VM には認証情報が無い）
+
+```
+cd ~/Developer/line-harness-oss
+git push fork main
+```
+
+### 事前に見ておくと確実なもの
+
+```
+npx wrangler d1 execute suzuki-yakupo-os --remote \
+  --config ops/suzuki-yakuho/wrangler.json \
+  --command "SELECT name FROM _migrations ORDER BY name DESC LIMIT 15"
+```
+
+`_migrations` が無い＝Actions が一度も動いていない。その場合 push すると 001 から全部当てにいくので、
+先に相談すること。あれば 055〜063 だけが当たる。
+
+### ロールバック
+`git revert -m 1 <merge>` か、`fork/main` を前の位置に戻して再デプロイ。
+マイグレーションは列追加のみなので、コードを戻しても既存機能は動く。
 
 ## 2. 決まっていること
 

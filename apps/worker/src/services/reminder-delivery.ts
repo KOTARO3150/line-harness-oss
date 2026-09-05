@@ -10,6 +10,7 @@ import { extractFlexAltText } from '../utils/flex-alt-text.js';
 import {
   getDueReminderDeliveries,
   completeReminderIfDone,
+  cancelFriendReminder,
   getFriendById,
   jstNow,
 } from '@line-crm/db';
@@ -47,6 +48,12 @@ export async function processReminderDeliveries(
 
       const friend = await getFriendById(db, fr.friend_id);
       if (!friend || !friend.is_following) {
+        // 送れない相手（退会・ブロック）は、その登録を止めてから次へ。
+        //
+        // 以前は continue するだけだった。1 回あたりの件数に上限が無かったころは
+        // 最後まで走り切るので実害が出なかったが、上限を入れた今は期日の古い順に
+        // 40 件を占め続け、後ろに並んだ生きているリマインダが永久に届かなくなる。
+        await cancelFriendReminder(db, fr.id);
         continue;
       }
 

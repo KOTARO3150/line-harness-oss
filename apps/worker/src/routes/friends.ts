@@ -18,6 +18,14 @@ import { requireRole } from '../middleware/role-guard.js';
 
 const friends = new Hono<Env>();
 
+// タグの付け外しは配信の宛先を決める操作なので、書き換えは owner / admin に限る。
+// 友だち情報欄 (PUT /:id/metadata) も同じ。閲覧は担当者全員に開けたまま。
+friends.on(
+  ['POST', 'DELETE'],
+  ['/api/friends/:id/tags', '/api/friends/:id/tags/:tagId'],
+  requireRole('owner', 'admin'),
+);
+
 /**
  * Convert a D1 snake_case Friend row to the shared camelCase shape.
  *
@@ -509,6 +517,13 @@ friends.put('/api/friends/:id/metadata', requireRole('owner', 'admin'), async (c
       const trimmed = key.trim();
       if (!trimmed) {
         return c.json({ success: false, error: '項目名を入れてください' }, 400);
+      }
+      // JSON.stringify で黙って落ちるキー。保存したつもりが消えるので、はっきり断る。
+      if (trimmed === '__proto__' || trimmed === 'constructor' || trimmed === 'prototype') {
+        return c.json(
+          { success: false, error: `「${trimmed}」は項目名に使えません` },
+          400,
+        );
       }
       if (trimmed.length > METADATA_MAX_KEY_LENGTH) {
         return c.json(

@@ -38,6 +38,16 @@ import {
 
 export const richMenuGroups = new Hono<Env>();
 
+// リッチメニューの変更はお客様全員の画面に出る。作成・編集・公開・一括適用は
+// owner / admin に限る。閲覧（GET）は担当者全員に開けたまま。
+//
+// unlink-all はさらに強く owner 限定（各ハンドラ側で指定）。ここは下限を揃えるための網。
+richMenuGroups.on(
+  ['POST', 'PUT', 'PATCH', 'DELETE'],
+  ['/api/rich-menu-groups', '/api/rich-menu-groups/*'],
+  requireRole('owner', 'admin'),
+);
+
 // ----- Serialization (snake_case row → camelCase response) -----
 
 function serializeGroup(row: RichMenuGroup) {

@@ -171,6 +171,20 @@ describe('PUT /api/friends/:id/metadata', () => {
     expect(writtenMetadata(writes)).toBeNull();
   });
 
+  test('__proto__ のような項目名は 400（保存したつもりで消えるのを防ぐ）', async () => {
+    dbMocks.getFriendById.mockResolvedValue(friendWith('{}'));
+    const { db, writes } = makeDb();
+    // オブジェクトリテラルで書くと prototype 設定になってしまうので、生の JSON を送る。
+    const res = await appAs('owner', db).request('/api/friends/f1/metadata', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"__proto__":"x"}',
+    });
+
+    expect(res.status).toBe(400);
+    expect(writtenMetadata(writes)).toBeNull();
+  });
+
   test('居ない友だちは 404', async () => {
     dbMocks.getFriendById.mockResolvedValue(null);
     const { db } = makeDb();

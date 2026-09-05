@@ -65,6 +65,12 @@ tags.post('/api/tags', requireRole('owner', 'admin'), async (c) => {
       return c.json({ success: false, error: 'name is required' }, 400);
     }
 
+    if (body.color !== undefined) {
+      if (typeof body.color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(body.color)) {
+        return c.json({ success: false, error: 'color must be like #3B82F6' }, 400);
+      }
+    }
+
     const tag = await createTag(c.env.DB, { name, color: body.color });
     return c.json({ success: true, data: serializeTag(tag) }, 201);
   } catch (err) {
@@ -122,12 +128,27 @@ tags.delete('/api/tags/:id', requireRole('owner', 'admin'), async (c) => {
     const existing = await getTagWithUsage(c.env.DB, id);
     if (!existing) return c.json({ success: false, error: 'Tag not found' }, 404);
 
-    if (countAutomationRefs(existing.usage) > 0 && c.req.query('force') !== '1') {
+    // 参照が残っているうちは断る。対象は 2 種類あって、どちらも取り消しがきかない。
+    //
+    //   設定からの参照 … ON DELETE SET NULL で、シナリオの起動条件などが黙って外れる
+    //   友だちへの付与 … ON DELETE CASCADE で、friend_tags の行がまとめて消える
+    //
+    // 後者は件数が大きくなりがちで、失われるのは「どのお客様がどの分類か」という
+    // 積み上げた情報そのもの。件数だけ返して、承知のうえで force を渡してもらう。
+    const blocked =
+      countAutomationRefs(existing.usage) > 0 || existing.usage.friends > 0;
+    if (blocked && c.req.query('force') !== '1') {
+      const reasons: string[] = [];
+      if (countAutomationRefs(existing.usage) > 0) {
+        reasons.push('設定から参照されています（消すとその設定が黙って無効になります）');
+      }
+      if (existing.usage.friends > 0) {
+        reasons.push(`${existing.usage.friends} 人のお客様に付いています（付与が全部消えます）`);
+      }
       return c.json(
         {
           success: false,
-          error:
-            'このタグは設定から参照されています。消すとその設定が黙って無効になります',
+          error: `このタグは${reasons.join('。また、')}`,
           data: serializeTagWithUsage(existing),
         },
         409,

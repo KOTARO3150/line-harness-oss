@@ -356,6 +356,14 @@ async function processQueuedBroadcastBatches(
     return;
   }
 
+  // 宛先の並びを id で固定する。
+  //
+  // この関数は tick ごとに宛先を引き直し、batch_offset で「どこまで送ったか」を数える。
+  // ところが元の並びは segment 経路が順不同、tag 経路が created_at DESC で、
+  // 途中で友だちが 1 人増えると並び全体がずれる。すると再開時に同じ人へ二重送信したり、
+  // 境目の人を飛ばしたりする。id は不変なので、これで tick をまたいでも並びが変わらない。
+  friends.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
   // 初回: total_count を設定
   if (batchOffset === 0) {
     await db.prepare('UPDATE broadcasts SET total_count = ? WHERE id = ?')

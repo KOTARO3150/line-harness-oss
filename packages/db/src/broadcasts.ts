@@ -420,6 +420,27 @@ export async function recoverStalledBroadcasts(db: D1Database): Promise<void> {
        AND julianday('now', '+9 hours') - julianday(batch_lock_at) > ${STALL_LOCK_REVOKE_DAYS_RESUMABLE}`,
     )
     .run();
+
+  // 3) 差し込みあり配信 (tag / segment) の途中停滞。
+  //
+  //    差し込みは 1 人ずつ push するため、1 回の tick では送りきれず複数 tick にまたがる。
+  //    つまり success_count > 0 のまま lock が残る状態が正常に起こりうる。
+  //    系統 1) は success_count = 0 が条件、系統 2) は dedup 限定なので、この経路は
+  //    どちらにも当たらず、Worker が落ちると永久に 'sending' のまま残ってしまう。
+  //
+  //    再開は batch_offset を進めながら行うので、resume しても既に送った人には送らない。
+  //    (dedup の dedup_progress と同じ役割を batch_offset が果たす)
+  await db
+    .prepare(
+      `UPDATE broadcasts SET batch_offset = 0, batch_lock_at = NULL
+       WHERE status = 'sending' AND batch_offset = -1
+       AND sent_at IS NULL
+       AND target_type IN ('tag', 'segment')
+       AND success_count > 0
+       AND batch_lock_at IS NOT NULL
+       AND julianday('now', '+9 hours') - julianday(batch_lock_at) > ${STALL_LOCK_REVOKE_DAYS_RESUMABLE}`,
+    )
+    .run();
 }
 
 export async function updateBroadcastBatchProgress(

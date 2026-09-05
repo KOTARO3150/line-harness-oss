@@ -297,12 +297,36 @@ broadcasts.post('/api/broadcasts', async (c) => {
       );
     }
 
-    // segment: 条件が無いと宛先ゼロのまま送信できてしまうので、作成時点で弾く。
+    // segment: 条件を作成時点で検証する。
+    //
+    // 検証を送信時まで先送りすると、不正な条件は cron のキュー内で例外になり、
+    // ロックを取ったまま 30 分ごとに失敗を繰り返して「送信中」から動かなくなる。
+    // また operator を見ていないと 'AND' 以外はすべて OR 扱いになり、
+    // 「A かつ B」のつもりの配信が「A または B」で広く飛んでしまう。
     if (body.targetType === 'segment') {
-      const cond = body.segmentConditions as { rules?: unknown[] } | undefined;
+      const cond = body.segmentConditions as
+        | { operator?: unknown; rules?: unknown[] }
+        | undefined;
       if (!cond || !Array.isArray(cond.rules) || cond.rules.length === 0) {
         return c.json(
           { success: false, error: '絞り込み条件を1つ以上指定してください' },
+          400,
+        );
+      }
+      if (cond.operator !== 'AND' && cond.operator !== 'OR') {
+        return c.json(
+          { success: false, error: '条件の組み合わせ方（AND / OR）を指定してください' },
+          400,
+        );
+      }
+      // 実際に送信時へ使うのと同じ関数で組み立ててみて、通らない条件はここで断る。
+      try {
+        const { buildSegmentQuery } = await import('../services/segment-query.js');
+        buildSegmentQuery(cond as Parameters<typeof buildSegmentQuery>[0]);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        return c.json(
+          { success: false, error: `絞り込み条件が不正です: ${message}` },
           400,
         );
       }
@@ -988,7 +1012,12 @@ broadcasts.post('/api/segments/count', async (c) => {
       accountBindings.unshift(body.accountId);
     }
 
-    const countSql = accountSql.replace(/^SELECT .+ FROM/, 'SELECT COUNT(*) as count FROM');
+    // 非貪欲にすること。`.+` だと EXISTS(...) 副問い合わせの中の最後の FROM まで
+    // 食ってしまい、括弧の合わない SQL になって、タグ条件の件数が常に 400 になる。
+    // ORDER BY も件数には不要なので落とす。
+    const countSql = accountSql
+      .replace(/^SELECT .+? FROM/, 'SELECT COUNT(*) as count FROM')
+      .replace(/\s+ORDER BY .+$/, '');
     const result = await c.env.DB.prepare(countSql).bind(...accountBindings).first<{ count: number }>();
 
     return c.json({ success: true, count: result?.count ?? 0 });

@@ -92,6 +92,10 @@ export default function TagsPage() {
   const usedIn = (usage: TagUsage) =>
     USAGE_LABELS.filter((u) => usage[u.key] > 0)
 
+  // API は「設定からの参照」か「友だちへの付与」が残っていると 409 で断る。
+  // どちらも取り消しがきかないので、画面で内訳を見せてから force を渡す。
+  const needsForce = (t: TagWithUsage) => t.automationRefs > 0 || t.usage.friends > 0
+
   return (
     <div>
       <Header
@@ -175,7 +179,8 @@ export default function TagsPage() {
           </h2>
           {confirmDelete.usage.friends > 0 && (
             <p className="text-xs text-amber-900 mb-2">
-              このタグが付いているお客様 {confirmDelete.usage.friends} 人からは外れます（お客様のデータは消えません）。
+              <strong>このタグが付いているお客様 {confirmDelete.usage.friends} 人ぶんの付与が消えます。</strong>
+              お客様の情報自体は残りますが、「誰がこの分類か」は元に戻せません。
             </p>
           )}
           {confirmDelete.automationRefs > 0 ? (
@@ -201,19 +206,19 @@ export default function TagsPage() {
             </>
           ) : (
             <p className="text-xs text-amber-900 mb-3">
-              このタグを参照している設定はありません。そのまま消して問題ありません。
+              このタグを参照している設定はありません。
             </p>
           )}
           <div className="flex gap-2">
             <button
-              onClick={() => remove(confirmDelete, confirmDelete.automationRefs > 0)}
+              onClick={() => remove(confirmDelete, needsForce(confirmDelete))}
               disabled={deleting}
               className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg disabled:opacity-50"
             >
               {deleting
                 ? '削除中...'
-                : confirmDelete.automationRefs > 0
-                  ? '設定が無効になることを承知で削除'
+                : needsForce(confirmDelete)
+                  ? '承知のうえで削除'
                   : '削除'}
             </button>
             <button

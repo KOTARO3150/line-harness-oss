@@ -141,6 +141,38 @@ describe('1人ずつの差し込み送信', () => {
     expect(result.sentFriendIds).toEqual(['f0']);
   });
 
+  test('件数の上限で打ち切る（サブリクエスト上限に当たる前に止める）', async () => {
+    const { client, sent } = fakeLine();
+    const many = Array.from({ length: 100 }, (_, i) =>
+      friend({ id: `f${i}`, line_user_id: `U${i}` }),
+    );
+    const result = await sendPersonalized(client, many, asText, '{{name}}様', {
+      maxSends: 5,
+    });
+
+    expect(sent.length).toBe(5);
+    expect(result.ranOutOfTime).toBe(true);
+    expect(result.sentFriendIds).toHaveLength(5);
+  });
+
+  test('上限に当たったあと push が即失敗しても、全員を失敗として数えない', async () => {
+    // サブリクエスト上限では push が時間を使わず throw する。時間だけを見ていると
+    // 残り全員を failed にしたまま「送信完了」にしてしまうので、件数で止める。
+    const { client } = fakeLine((to) => {
+      const n = Number(to.slice(1));
+      if (n >= 5) throw new Error('Too many subrequests');
+    });
+    const many = Array.from({ length: 100 }, (_, i) =>
+      friend({ id: `f${i}`, line_user_id: `U${i}` }),
+    );
+    const result = await sendPersonalized(client, many, asText, '{{name}}様', {
+      maxSends: 5,
+    });
+
+    expect(result.ranOutOfTime).toBe(true);
+    expect(result.sentFriendIds.length + result.failed.length).toBe(5);
+  });
+
   test('宛先が空なら何もしない', async () => {
     const { client, sent } = fakeLine();
     const result = await sendPersonalized(client, [], asText, '{{name}}様');
@@ -177,6 +209,15 @@ describe('差し込みに要る列の取得', () => {
     const rows = [friend({ id: 'f1' })];
     const got = await loadPersonalizableFriends(dbWith(rows), ['f1', 'missing']);
     expect(got.map((f) => f.id)).toEqual(['f1']);
+  });
+
+  test('100件を超えても引ける（D1 の bind 変数上限で割る）', async () => {
+    const rows = Array.from({ length: 250 }, (_, i) =>
+      friend({ id: `f${i}`, line_user_id: `U${i}` }),
+    );
+    const ids = rows.map((r) => r.id);
+    const got = await loadPersonalizableFriends(dbWith(rows), ids);
+    expect(got.map((f) => f.id)).toEqual(ids);
   });
 
   test('空なら DB を触らない', async () => {

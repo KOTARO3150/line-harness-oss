@@ -93,7 +93,10 @@ export function buildSegmentQuery(condition: SegmentCondition): { sql: string; b
 
   const separator = condition.operator === 'AND' ? ' AND ' : ' OR '
   const where = clauses.length > 0 ? clauses.join(separator) : '1=1'
-  const sql = `SELECT f.id, f.line_user_id FROM friends f WHERE ${where}`
+  // ORDER BY を必ず付ける。差し込み配信は複数 tick に分けて offset で再開するため、
+  // 並びが tick 間で変わると同じ人へ二重送信したり、境目の人を飛ばしたりする。
+  // id は不変なので、友だちが増えても既存の並びはずれない。
+  const sql = `SELECT f.id, f.line_user_id FROM friends f WHERE ${where} ORDER BY f.id`
 
   return { sql, bindings }
 }

@@ -134,6 +134,16 @@ describe('POST /api/tags', () => {
     expect(res.status).toBe(409);
   });
 
+  test('色の形式が不正なら 400（PUT と揃える）', async () => {
+    const res = await appAs('owner').request('/api/tags', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'x', color: 'url(https://example.com/x)' }),
+    });
+    expect(res.status).toBe(400);
+    expect(dbMocks.createTag).not.toHaveBeenCalled();
+  });
+
   test('staff は作成できない', async () => {
     const res = await appAs('staff').request('/api/tags', {
       method: 'POST',
@@ -196,13 +206,27 @@ describe('DELETE /api/tags/:id', () => {
     expect(dbMocks.deleteTag).toHaveBeenCalled();
   });
 
-  test('友だちに付いているだけなら消せる', async () => {
+  test('友だちに付いているだけでも 409 で止める（付与がまとめて消えるため）', async () => {
     dbMocks.getTagWithUsage.mockResolvedValue({
       ...tagRow(),
       usage: { ...emptyUsage, friends: 120 },
     });
     const res = await appAs('owner').request('/api/tags/t1', { method: 'DELETE' });
+    expect(res.status).toBe(409);
+    expect(dbMocks.deleteTag).not.toHaveBeenCalled();
+    const body = (await res.json()) as { error: string };
+    // 何人ぶん失われるかを本文に出す（画面はこれを見せて確認する）
+    expect(body.error).toContain('120 人');
+  });
+
+  test('友だちに付いていても force=1 なら消せる', async () => {
+    dbMocks.getTagWithUsage.mockResolvedValue({
+      ...tagRow(),
+      usage: { ...emptyUsage, friends: 120 },
+    });
+    const res = await appAs('owner').request('/api/tags/t1?force=1', { method: 'DELETE' });
     expect(res.status).toBe(200);
+    expect(dbMocks.deleteTag).toHaveBeenCalled();
   });
 
   test('シナリオから参照されていたら 409 で止め、何が使っているか返す', async () => {

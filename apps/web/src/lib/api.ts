@@ -260,6 +260,13 @@ export const api = {
         { method: 'DELETE' },
       ),
   },
+  richMenus: {
+    /** LINE 側に登録されているリッチメニュー一覧。オートメーションの切替先を選ぶのに使う。 */
+    list: (accountId?: string) =>
+      fetchApi<ApiResponse<{ richMenuId: string; name: string; chatBarText: string }[]>>(
+        '/api/rich-menus' + (accountId ? `?accountId=${encodeURIComponent(accountId)}` : ''),
+      ),
+  },
   scenarios: {
     list: (params?: { accountId?: string }) => {
       const query = params?.accountId ? '?lineAccountId=' + params.accountId : ''

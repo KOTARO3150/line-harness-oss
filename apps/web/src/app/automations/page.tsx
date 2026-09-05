@@ -5,6 +5,8 @@ import { api } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
+import RuleBuilder, { type LookupLists } from '@/components/automations/rule-builder'
+import { describeAction } from '@/lib/automation-rule'
 
 type AutomationEventType = "friend_add" | "tag_change" | "score_threshold" | "cv_fire" | "message_received" | "calendar_booked"
 
@@ -60,8 +62,9 @@ interface CreateFormState {
   name: string
   description: string
   eventType: AutomationEventType
-  actionsJson: string
-  conditionsJson: string
+  /** 保存形式そのまま。RuleBuilder が選択式 / JSON のどちらで編集するかを決める。 */
+  actions: unknown
+  conditions: unknown
   priority: number
 }
 
@@ -69,8 +72,8 @@ const initialForm: CreateFormState = {
   name: '',
   description: '',
   eventType: 'friend_add',
-  actionsJson: '[\n  {\n    "type": "add_tag",\n    "params": {}\n  }\n]',
-  conditionsJson: '{}',
+  actions: [],
+  conditions: {},
   priority: 0,
 }
 
@@ -102,6 +105,16 @@ export default function AutomationsPage() {
   const [form, setForm] = useState<CreateFormState>({ ...initialForm })
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
+  // 編集中のルール ID。null なら新規作成。
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [builderError, setBuilderError] = useState<string | null>(null)
+  // アクションの選択欄に出す一覧。名前で選べるようにするために持つ。
+  const [lookup, setLookup] = useState<LookupLists>({
+    tags: [],
+    scenarios: [],
+    templates: [],
+    richMenus: [],
+  })
 
   const loadAutomations = useCallback(async () => {
     setLoading(true)
@@ -118,6 +131,43 @@ export default function AutomationsPage() {
     } finally {
       setLoading(false)
     }
+  }, [selectedAccountId])
+
+  // 選択欄用の一覧。取得に失敗しても画面は動かす（ID を直接見せる形に落ちるだけ）。
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      const [tagRes, scenarioRes, templateRes, menuRes] = await Promise.allSettled([
+        api.tags.list(),
+        api.scenarios.list({ accountId: selectedAccountId || undefined }),
+        api.templates.list(),
+        api.richMenus.list(selectedAccountId || undefined),
+      ])
+      if (cancelled) return
+      setLookup({
+        tags:
+          tagRes.status === 'fulfilled' && tagRes.value.success
+            ? tagRes.value.data.map((t) => ({ id: t.id, name: t.name }))
+            : [],
+        scenarios:
+          scenarioRes.status === 'fulfilled' && scenarioRes.value.success
+            ? scenarioRes.value.data.map((x) => ({ id: x.id, name: x.name }))
+            : [],
+        templates:
+          templateRes.status === 'fulfilled' && templateRes.value.success
+            ? templateRes.value.data.map((x) => ({ id: x.id, name: x.name }))
+            : [],
+        richMenus:
+          menuRes.status === 'fulfilled' && menuRes.value.success
+            ? menuRes.value.data.map((m) => ({
+                richMenuId: m.richMenuId,
+                name: m.name || m.chatBarText || m.richMenuId.slice(0, 12),
+              }))
+            : [],
+      })
+    }
+    load()
+    return () => { cancelled = true }
   }, [selectedAccountId])
 
   useEffect(() => {
@@ -153,47 +203,67 @@ export default function AutomationsPage() {
     }
   }, [selectedAccountId, accountLoading])
 
-  const handleCreate = async () => {
+  const openCreate = () => {
+    setForm({ ...initialForm })
+    setEditingId(null)
+    setBuilderError(null)
+    setFormError('')
+    setShowCreate(true)
+  }
+
+  const openEdit = (automation: Automation) => {
+    setForm({
+      name: automation.name,
+      description: automation.description ?? '',
+      eventType: automation.eventType,
+      actions: automation.actions,
+      conditions: automation.conditions,
+      priority: automation.priority,
+    })
+    setEditingId(automation.id)
+    setBuilderError(null)
+    setFormError('')
+    setShowCreate(true)
+  }
+
+  const handleSave = async () => {
     if (!form.name.trim()) {
       setFormError('ルール名を入力してください')
       return
     }
-
-    let parsedActions: AutomationAction[]
-    let parsedConditions: Record<string, unknown>
-    try {
-      parsedActions = JSON.parse(form.actionsJson)
-    } catch {
-      setFormError('アクションのJSON形式が正しくありません')
+    if (builderError) {
+      setFormError(builderError)
       return
     }
-    try {
-      parsedConditions = JSON.parse(form.conditionsJson)
-    } catch {
-      setFormError('条件のJSON形式が正しくありません')
+    if (!Array.isArray(form.actions) || form.actions.length === 0) {
+      setFormError('アクションを1つ以上足してください')
       return
     }
 
     setSaving(true)
     setFormError('')
     try {
-      const res = await api.automations.create({
+      const payload = {
         name: form.name,
         description: form.description || null,
         eventType: form.eventType,
-        actions: parsedActions,
-        conditions: parsedConditions,
+        actions: form.actions as Automation['actions'],
+        conditions: (form.conditions ?? {}) as Record<string, unknown>,
         priority: form.priority,
-      })
+      }
+      const res = editingId
+        ? await api.automations.update(editingId, payload)
+        : await api.automations.create(payload)
       if (res.success) {
         setShowCreate(false)
+        setEditingId(null)
         setForm({ ...initialForm })
         loadAutomations()
       } else {
         setFormError(res.error)
       }
     } catch {
-      setFormError('作成に失敗しました')
+      setFormError(editingId ? '保存に失敗しました' : '作成に失敗しました')
     } finally {
       setSaving(false)
     }
@@ -237,7 +307,7 @@ export default function AutomationsPage() {
         title="オートメーション"
         action={
           <button
-            onClick={() => setShowCreate(true)}
+            onClick={openCreate}
             className="px-4 py-2 min-h-[44px] text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90"
             style={{ backgroundColor: '#06C755' }}
           >
@@ -256,8 +326,8 @@ export default function AutomationsPage() {
       {/* Create form */}
       {showCreate && (
         <div className="mb-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <h2 className="text-sm font-semibold text-gray-800 mb-4">新規オートメーションを作成</h2>
-          <div className="space-y-4 max-w-lg">
+          <h2 className="text-sm font-semibold text-gray-800 mb-4">{editingId ? 'オートメーションを編集' : '新規オートメーションを作成'}</h2>
+          <div className="space-y-4 max-w-xl">
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">ルール名 <span className="text-red-500">*</span></label>
               <input
@@ -290,26 +360,13 @@ export default function AutomationsPage() {
                 ))}
               </select>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">アクション (JSON)</label>
-              <textarea
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
-                rows={6}
-                placeholder='[{"type": "add_tag", "params": {"tagId": "..."}}]'
-                value={form.actionsJson}
-                onChange={(e) => setForm({ ...form, actionsJson: e.target.value })}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">条件 (JSON)</label>
-              <textarea
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-green-500 resize-y"
-                rows={3}
-                placeholder='{"tagId": "...", "operator": "equals"}'
-                value={form.conditionsJson}
-                onChange={(e) => setForm({ ...form, conditionsJson: e.target.value })}
-              />
-            </div>
+            <RuleBuilder
+              value={{ actions: form.actions, conditions: form.conditions }}
+              onChange={(next) => setForm({ ...form, actions: next.actions, conditions: next.conditions })}
+              lookup={lookup}
+              onValidityChange={setBuilderError}
+            />
+
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">優先度</label>
               <input
@@ -324,15 +381,15 @@ export default function AutomationsPage() {
 
             <div className="flex gap-2">
               <button
-                onClick={handleCreate}
+                onClick={handleSave}
                 disabled={saving}
                 className="px-4 py-2 min-h-[44px] text-sm font-medium text-white rounded-lg disabled:opacity-50 transition-opacity"
                 style={{ backgroundColor: '#06C755' }}
               >
-                {saving ? '作成中...' : '作成'}
+                {saving ? '保存中...' : editingId ? '保存' : '作成'}
               </button>
               <button
-                onClick={() => { setShowCreate(false); setFormError('') }}
+                onClick={() => { setShowCreate(false); setEditingId(null); setFormError('') }}
                 className="px-4 py-2 min-h-[44px] text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
               >
                 キャンセル
@@ -412,6 +469,21 @@ export default function AutomationsPage() {
                 )}
               </div>
 
+              {/* 何をするルールか — JSON を読まなくても分かるように並べる */}
+              {automation.actions.length > 0 && (
+                <ul className="mb-3 space-y-0.5">
+                  {automation.actions.slice(0, 4).map((a, i) => (
+                    <li key={i} className="text-xs text-gray-600 flex gap-1.5">
+                      <span className="text-gray-300">→</span>
+                      <span className="min-w-0 break-words">{describeAction(a, lookup)}</span>
+                    </li>
+                  ))}
+                  {automation.actions.length > 4 && (
+                    <li className="text-xs text-gray-400">ほか {automation.actions.length - 4} 件</li>
+                  )}
+                </ul>
+              )}
+
               {/* Meta info */}
               {(() => {
                 const sendMsgWithTpl = automation.actions.filter(
@@ -432,6 +504,12 @@ export default function AutomationsPage() {
 
               {/* Actions */}
               <div className="flex items-center justify-end gap-2 pt-2 border-t border-gray-100">
+                <button
+                  onClick={() => openEdit(automation)}
+                  className="px-3 py-1 min-h-[44px] text-xs font-medium text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors"
+                >
+                  編集
+                </button>
                 <button
                   onClick={() => handleDelete(automation.id)}
                   className="px-3 py-1 min-h-[44px] text-xs font-medium text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 rounded-md transition-colors"

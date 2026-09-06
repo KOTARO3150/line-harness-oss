@@ -1,0 +1,29 @@
+name: D1 Inspect
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Read-only schema dump
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          D1_DATABASE_NAME: ${{ secrets.D1_DATABASE_NAME }}
+        run: |
+          q() {
+            echo "===== $1"
+            npx wrangler d1 execute "$D1_DATABASE_NAME" --remote --command "$1" --json
+          }
+          q "SELECT name FROM _migrations ORDER BY name"
+          q "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+          q "SELECT sql FROM sqlite_master WHERE name='orders'"
+          q "SELECT sql FROM sqlite_master WHERE name='order_items'"
+          q "SELECT sql FROM sqlite_master WHERE name='staff_members'"

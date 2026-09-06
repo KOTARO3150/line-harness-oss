@@ -1,7 +1,9 @@
 name: D1 Inspect
 
+
 on:
   workflow_dispatch:
+
 
 jobs:
   inspect:
@@ -33,3 +35,4 @@ jobs:
           q "orders_cols" "SELECT group_concat(name, ' ') AS c FROM pragma_table_info('orders')"
           q "order_items_cols" "SELECT group_concat(name, ' ') AS c FROM pragma_table_info('order_items')"
           q "staff_cols" "SELECT group_concat(name, ' ') AS c FROM pragma_table_info('staff_members')"
+          q "indexes" "SELECT group_concat(name, ' ') AS i FROM sqlite_master WHERE type='index'"

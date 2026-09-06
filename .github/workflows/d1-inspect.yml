@@ -19,11 +19,17 @@ jobs:
           D1_DATABASE_NAME: ${{ secrets.D1_DATABASE_NAME }}
         run: |
           q() {
-            echo "===== $1"
-            npx wrangler d1 execute "$D1_DATABASE_NAME" --remote --command "$1" --json
+            out=$(npx wrangler d1 execute "$D1_DATABASE_NAME" --remote --command "$2" --json 2>/dev/null \
+              | node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8'));console.log(JSON.stringify(d[0].results))")
+            {
+              echo "### $1"
+              echo '```'
+              echo "$out"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
           }
-          q "SELECT name FROM _migrations ORDER BY name"
-          q "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-          q "SELECT sql FROM sqlite_master WHERE name='orders'"
-          q "SELECT sql FROM sqlite_master WHERE name='order_items'"
-          q "SELECT sql FROM sqlite_master WHERE name='staff_members'"
+          q "migrations" "SELECT group_concat(name, ' ') AS m FROM (SELECT name FROM _migrations ORDER BY name)"
+          q "tables" "SELECT group_concat(name, ' ') AS t FROM (SELECT name FROM sqlite_master WHERE type='table' ORDER BY name)"
+          q "orders_cols" "SELECT group_concat(name, ' ') AS c FROM pragma_table_info('orders')"
+          q "order_items_cols" "SELECT group_concat(name, ' ') AS c FROM pragma_table_info('order_items')"
+          q "staff_cols" "SELECT group_concat(name, ' ') AS c FROM pragma_table_info('staff_members')"

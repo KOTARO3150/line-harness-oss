@@ -78,6 +78,7 @@ import { messageTemplates } from './routes/message-templates.js';
 import dedupPreview from './routes/dedup-preview.js';
 import { profileRefresh } from './routes/profile-refresh.js';
 import { richMenuGroups } from './routes/rich-menu-groups.js';
+import { richMenuAudit } from './routes/rich-menu-audit.js';
 import adminVersion from './routes/admin-version.js';
 import adminUpdate from './routes/admin-update.js';
 import { consultationCharts } from './routes/consultation-charts.js';
@@ -220,6 +221,7 @@ app.route('/', dedupPreview);
 app.route('/', profileRefresh);
 app.route('/', richMenuGroups);
 app.route('/', videoLibrary);
+app.route('/', richMenuAudit);
 app.route('/', orders);
 
 // Phase 5 (upgrade flow) — public build metadata endpoint. Mounted under

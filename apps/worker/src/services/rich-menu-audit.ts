@@ -31,8 +31,15 @@ export interface AuditResult {
   ranOutOfTime: boolean;
 }
 
-/** 1 回の呼び出しで見る人数の上限。Workers のサブリクエスト上限に当たる前に止める。 */
-export const MAX_SCAN_PER_RUN = 120;
+/**
+ * 1 回の呼び出しで見る人数の上限。
+ *
+ * Cloudflare Workers の無料プランは 1 リクエストあたりのサブリクエストが 50 件まで。
+ * 1 人につき LINE へ 1 回問い合わせるので、50 を超えたぶんは全部失敗する。
+ * 実測 (2026-09-07): 120 で回したところ 300 人中 150 人が失敗し、
+ * 40 に下げたところ 300 人すべて成功した。上限に余裕を持たせてこの値にしている。
+ */
+export const MAX_SCAN_PER_RUN = 40;
 /** 1 回の呼び出しの時間予算 (ms)。 */
 const DEFAULT_BUDGET_MS = 20_000;
 

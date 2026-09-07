@@ -1,9 +1,22 @@
 name: Update from upstream
 
+# 本家 (Shudesu/line-harness-oss) の変更を取り込むための仕組み。
+#
+# 毎晩の自動実行はやめた。理由:
+#   このフォークは鈴木薬舗向けに大きく分かれていて（2026-09 時点で本家に 82 コミット、
+#   両方で変更されたファイルが 69 個）、`git merge upstream/main` は必ず衝突する。
+#   そのため毎晩ジョブが赤くなり続け、しかも誰も直せない PR すら作られていなかった。
+#   「いつも赤い」状態は、本当に見るべき失敗を見えなくする。
+#
+# 取り込みたくなったら Actions タブから手動で実行する（Run workflow）。
+# 衝突しても**ジョブは失敗させない** — 衝突したファイルを実行サマリに出して終わる。
+# そのうえで、取り込むかどうかは人が判断する。
+#
+# 毎週などに戻したい場合は、下の schedule のコメントを外す。
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '17 19 * * *'
+  # schedule:
+  #   - cron: '17 19 * * 1'   # 毎週月曜
 
 permissions:
   contents: write
@@ -25,7 +38,8 @@ jobs:
 
       - name: Fetch upstream
         run: |
-          git remote add upstream https://github.com/Shudesu/line-harness-oss.git
+          git remote add upstream https://github.com/Shudesu/line-harness-oss.git || \
+            git remote set-url upstream https://github.com/Shudesu/line-harness-oss.git
           git fetch upstream main
 
       - name: Detect upstream changes
@@ -45,18 +59,44 @@ jobs:
           git switch -c "$branch"
           echo "name=$branch" >> "$GITHUB_OUTPUT"
 
+      # 衝突してもジョブは落とさない。落とすと「毎回赤い」だけで何も分からないため、
+      # 何が衝突したのかをサマリに残して、人が判断できる形にする。
       - name: Merge upstream/main
         if: steps.detect.outputs.has_changes == 'true'
+        id: merge
         run: |
-          git merge --no-edit upstream/main
+          if git merge --no-edit upstream/main; then
+            echo "conflicted=false" >> "$GITHUB_OUTPUT"
+            echo "自動マージできました。" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "conflicted=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "## 本家との自動マージは衝突しました"
+              echo ""
+              echo "このフォークは鈴木薬舗向けに分かれているため、自動では取り込めません。"
+              echo "取り込む場合は手元で解決してください。"
+              echo ""
+              echo '```'
+              echo "git fetch upstream main"
+              echo "git switch -c upstream-merge && git merge upstream/main"
+              echo '```'
+              echo ""
+              echo "### 衝突したファイル"
+              echo ""
+              echo '```'
+              git diff --name-only --diff-filter=U
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            git merge --abort
+          fi
 
       - name: Push update branch
-        if: steps.detect.outputs.has_changes == 'true'
+        if: steps.detect.outputs.has_changes == 'true' && steps.merge.outputs.conflicted == 'false'
         run: |
           git push origin "${{ steps.branch.outputs.name }}"
 
       - name: Open pull request
-        if: steps.detect.outputs.has_changes == 'true'
+        if: steps.detect.outputs.has_changes == 'true' && steps.merge.outputs.conflicted == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -64,8 +104,8 @@ jobs:
             --base main \
             --head "${{ steps.branch.outputs.name }}" \
             --title "chore: update from upstream" \
-            --body "This PR imports the latest Shudesu/line-harness-oss main into this fork.\n\nMerge this PR to receive upstream fixes and features, then let the existing Cloudflare deploy workflows update your environment."
+            --body "本家 Shudesu/line-harness-oss の main を取り込みます。中身を確認してからマージしてください。"
 
       - name: No upstream changes
         if: steps.detect.outputs.has_changes == 'false'
-        run: echo "Fork is already up to date with upstream/main."
+        run: echo "本家と同じ内容です。取り込むものはありません。" >> "$GITHUB_STEP_SUMMARY"

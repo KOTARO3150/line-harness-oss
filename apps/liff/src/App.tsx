@@ -6,7 +6,6 @@ import EventConfirm from './pages/EventConfirm.js';
 import EventDone from './pages/EventDone.js';
 import EventBookings from './pages/EventBookings.js';
 import Affiliate from './pages/Affiliate.js';
-import Form from './pages/Form.js';
 
 export default function App() {
   return (
@@ -18,7 +17,6 @@ export default function App() {
       <Route path="/events/:id/done" element={<EventDone />} />
       <Route path="/events/:id" element={<Event />} />
       <Route path="/affiliate" element={<Affiliate />} />
-      <Route path="/form" element={<Form />} />
       <Route path="/" element={<Navigate to="/booking" replace />} />
       <Route
         path="*"

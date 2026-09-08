@@ -26,7 +26,7 @@ const FORM_VERSION = '2.0.0'; // cache buster
 interface FormField {
   name: string;
   label: string;
-  type: 'text' | 'email' | 'tel' | 'number' | 'textarea' | 'select' | 'radio' | 'checkbox' | 'date';
+  type: 'text' | 'email' | 'tel' | 'number' | 'textarea' | 'select' | 'radio' | 'checkbox' | 'date' | 'quantity';
   required?: boolean;
   options?: string[];
   placeholder?: string;
@@ -36,6 +36,10 @@ interface FormField {
    * 商品の予約フォームのように「選んだ内容でいくらか」をその場で見せたいときに使う。
    */
   optionPrices?: number[];
+  /** type: 'quantity' のときの単価 (円)。合計は 単価 x 個数 で出す。 */
+  unitPrice?: number;
+  /** type: 'quantity' で選べる最大個数。既定 10。 */
+  maxQuantity?: number;
 }
 
 interface FormDef {
@@ -119,7 +123,11 @@ function priceAttr(field: FormField, index: number): string {
 }
 
 function hasPricedFields(fields: FormField[]): boolean {
-  return fields.some((f) => Array.isArray(f.optionPrices) && f.optionPrices.length > 0);
+  return fields.some(
+    (f) =>
+      (Array.isArray(f.optionPrices) && f.optionPrices.length > 0) ||
+      (f.type === 'quantity' && typeof f.unitPrice === 'number'),
+  );
 }
 
 function formatYen(n: number): string {
@@ -134,6 +142,13 @@ function computeTotal(): number {
     .forEach((el) => {
       const v = Number(el.dataset.price);
       if (Number.isFinite(v)) total += v;
+    });
+  document
+    .querySelectorAll<HTMLSelectElement>('select[data-unit-price]')
+    .forEach((el) => {
+      const unit = Number(el.dataset.unitPrice);
+      const qty = Number(el.value);
+      if (Number.isFinite(unit) && Number.isFinite(qty)) total += unit * qty;
     });
   return total;
 }
@@ -223,6 +238,22 @@ function renderField(field: FormField): string {
       break;
     }
 
+    // 商品の個数。「品名 + 単価」と「個数のプルダウン」を 1 行に並べる。
+    // 選択肢を縦に長く並べるより、複数の商品を見比べやすい。
+    case 'quantity': {
+      const max = Math.max(1, Math.min(field.maxQuantity ?? 10, 99));
+      const opts = Array.from({ length: max + 1 }, (_, n) => `<option value="${n}">${n}</option>`).join('');
+      return `
+        <div class="form-field quantity-row">
+          <label class="quantity-name" for="field-${escapeHtml(field.name)}">${escapeHtml(field.label)}</label>
+          <div class="quantity-pick">
+            <select id="field-${escapeHtml(field.name)}" name="${escapeHtml(field.name)}"
+              class="form-select quantity-select" data-unit-price="${field.unitPrice ?? 0}">${opts}</select>
+            <span class="quantity-unit">個</span>
+          </div>
+        </div>`;
+    }
+
     case 'checkbox': {
       const boxes = (field.options ?? [])
         .map(
@@ -299,6 +330,14 @@ function injectStyles(): void {
     .radio-label input, .checkbox-label input { accent-color: #06C755; width: 18px; height: 18px; }
     .radio-label input[type="radio"] { appearance: none; -webkit-appearance: none; width: 18px; height: 18px; border: 2px solid #ccc; border-radius: 50%; background: #fff; cursor: pointer; }
     .radio-label input[type="radio"]:checked { background: #fff; border-color: #06C755; border-width: 5px; }
+    .quantity-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 12px 0; border-bottom: 1px solid #f0f0f0; margin-bottom: 0;
+    }
+    .quantity-name { font-size: 15px; font-weight: 600; color: #333; line-height: 1.4; }
+    .quantity-pick { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+    .quantity-select { width: 76px; padding: 10px 26px 10px 12px; text-align: center; }
+    .quantity-unit { font-size: 15px; color: #666; }
     .form-total {
       display: flex; align-items: baseline; justify-content: space-between;
       gap: 12px; padding: 14px 16px; margin-top: 4px;

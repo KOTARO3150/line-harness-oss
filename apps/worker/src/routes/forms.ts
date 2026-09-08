@@ -605,8 +605,21 @@ forms.post('/api/forms/:id/submit', async (c) => {
             // Tracked-link reward template overrides everything (per-campaign reward)
             messages.push(rewardFromTrackedLink as ReturnType<typeof buildMessage>);
           } else if (form.on_submit_message_type && form.on_submit_message_content) {
-            // Custom form message replaces default diagnostic result
-            const expanded = expandVariables(form.on_submit_message_content, friendData, apiOrigin, form.on_submit_message_type);
+            // Custom form message replaces default diagnostic result.
+            // 本文に {{answers}} があれば、回答内容 (注文票) をそこへ差し込む。
+            // これで、お客様は自分の注文を確認でき、店側もチャット画面だけで
+            // 中身が分かる (管理画面の別ページを開かなくてよい)。
+            const { injectAnswers } = await import('../services/form-answer-summary.js');
+            const summaryFields = form.fields
+              ? (JSON.parse(form.fields) as Array<{ name: string; label: string; type?: string }>)
+              : [];
+            const withAnswers = injectAnswers(
+              form.on_submit_message_content,
+              summaryFields,
+              submissionData as Record<string, unknown>,
+              form.on_submit_message_type,
+            );
+            const expanded = expandVariables(withAnswers, friendData, apiOrigin, form.on_submit_message_type);
             // 1:1 push → /t リンクに f=<friendId> を焼き込み (LIFF 識別ホップ回避)
             const { appendFriendToTrackedLinks } = await import('../services/auto-track.js');
             const decorated = await appendFriendToTrackedLinks(db, expanded, apiOrigin, friend.id);

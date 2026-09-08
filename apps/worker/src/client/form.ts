@@ -31,6 +31,11 @@ interface FormField {
   options?: string[];
   placeholder?: string;
   columns?: number;
+  /**
+   * options と同じ並びの金額 (円)。指定した選択肢を選ぶとフォーム下部の合計に足される。
+   * 商品の予約フォームのように「選んだ内容でいくらか」をその場で見せたいときに使う。
+   */
+  optionPrices?: number[];
 }
 
 interface FormDef {
@@ -102,6 +107,52 @@ function getApp(): HTMLElement {
 
 // ========== Field Rendering ==========
 
+// ─── 金額の計算 ───────────────────────────────────────────────────────────
+// 商品の予約フォームでは「選んだ内容でいくらになるか」がその場で見えないと、
+// お客様は送信前に迷い、店は電話で聞かれることになる。
+// optionPrices を持つ選択肢に金額を仕込み、選ぶたびに合計を出し直す。
+
+function priceAttr(field: FormField, index: number): string {
+  const price = field.optionPrices?.[index];
+  if (typeof price !== 'number' || !Number.isFinite(price)) return '';
+  return ` data-price="${price}"`;
+}
+
+function hasPricedFields(fields: FormField[]): boolean {
+  return fields.some((f) => Array.isArray(f.optionPrices) && f.optionPrices.length > 0);
+}
+
+function formatYen(n: number): string {
+  return `${n.toLocaleString('ja-JP')}円`;
+}
+
+/** いま選ばれている選択肢の金額を合計する。 */
+function computeTotal(): number {
+  let total = 0;
+  document
+    .querySelectorAll<HTMLInputElement>('input[type="radio"][data-price]:checked')
+    .forEach((el) => {
+      const v = Number(el.dataset.price);
+      if (Number.isFinite(v)) total += v;
+    });
+  return total;
+}
+
+function refreshTotal(): void {
+  const el = document.getElementById('form-total-amount');
+  if (el) el.textContent = formatYen(computeTotal());
+}
+
+function totalRowHtml(fields: FormField[]): string {
+  if (!hasPricedFields(fields)) return '';
+  return `
+    <div class="form-total">
+      <span>ご計金額</span>
+      <strong id="form-total-amount">0円</strong>
+    </div>
+    <p class="form-total-note">お選びいただいた内容の合計です（税込）。</p>`;
+}
+
 function renderField(field: FormField): string {
   const required = field.required ? ' required' : '';
   const placeholder = field.placeholder ? ` placeholder="${escapeHtml(field.placeholder)}"` : '';
@@ -161,9 +212,9 @@ function renderField(field: FormField): string {
     case 'radio': {
       const radios = (field.options ?? [])
         .map(
-          (o) =>
+          (o, i) =>
             `<label class="radio-label">
-              <input type="radio" name="${escapeHtml(field.name)}" value="${escapeHtml(o)}"${required} />
+              <input type="radio" name="${escapeHtml(field.name)}" value="${escapeHtml(o)}"${required}${priceAttr(field, i)} />
               ${escapeHtml(o)}
             </label>`,
         )
@@ -248,6 +299,14 @@ function injectStyles(): void {
     .radio-label input, .checkbox-label input { accent-color: #06C755; width: 18px; height: 18px; }
     .radio-label input[type="radio"] { appearance: none; -webkit-appearance: none; width: 18px; height: 18px; border: 2px solid #ccc; border-radius: 50%; background: #fff; cursor: pointer; }
     .radio-label input[type="radio"]:checked { background: #fff; border-color: #06C755; border-width: 5px; }
+    .form-total {
+      display: flex; align-items: baseline; justify-content: space-between;
+      gap: 12px; padding: 14px 16px; margin-top: 4px;
+      background: #e8faf0; border: 1.5px solid #06C755; border-radius: 8px;
+      font-size: 16px; font-weight: 600; color: #333;
+    }
+    .form-total strong { font-size: 24px; color: #067a38; }
+    .form-total-note { font-size: 12px; color: #999; margin: 6px 0 12px; text-align: right; }
     .submit-btn {
       width: 100%; padding: 14px; border: none; border-radius: 8px;
       background: #06C755; color: #fff; font-size: 16px; font-weight: 700;
@@ -506,6 +565,7 @@ function render(): void {
         </div>
         <form id="liff-form" class="form-body" novalidate>
           ${fieldsHtml}
+          ${totalRowHtml(formDef.fields)}
           <button type="submit" class="submit-btn" id="submitBtn">送信する</button>
         </form>
       </div>
@@ -680,6 +740,12 @@ function collectFormData(): Record<string, unknown> {
       );
       result[field.name] = el?.value ?? '';
     }
+  }
+
+  // 画面に出したのと同じ合計を、回答としても残す。
+  // 後から単価を変えても、そのとき提示した金額が分かるようにするため。
+  if (hasPricedFields(formDef.fields)) {
+    result['ご計金額'] = formatYen(computeTotal());
   }
 
   return result;
@@ -1153,6 +1219,9 @@ function attachFormEvents(): void {
     e.preventDefault();
     void submitForm();
   });
+  // 金額つきの選択肢があるフォームでは、選ぶたびに合計を出し直す。
+  form?.addEventListener('change', () => refreshTotal());
+  refreshTotal();
   attachXAutocomplete();
 }
 

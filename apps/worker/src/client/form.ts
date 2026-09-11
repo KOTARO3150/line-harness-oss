@@ -168,10 +168,28 @@ function totalRowHtml(fields: FormField[]): string {
     <p class="form-total-note">お選びいただいた内容の合計です（税込）。</p>`;
 }
 
+/**
+ * 質問がすべて必須のフォームでは、「*」を全部の行に付けても情報量がない。
+ * 印が並ぶほど回答者は身構えるので、印は消して、冒頭に一言だけ置く。
+ * 個数の質問は 0 個も正しい答えなので、必須かどうかの判定からは外す。
+ */
+function allFieldsRequired(fields: FormField[]): boolean {
+  const asked = fields.filter((f) => f.type !== 'quantity');
+  return asked.length > 0 && asked.every((f) => f.required === true);
+}
+
+/** 「*」を出すかどうか。renderField は各所から呼ばれるのでモジュール変数で渡す。 */
+let hideRequiredMarks = false;
+
+function requiredNoticeHtml(fields: FormField[]): string {
+  if (!allFieldsRequired(fields)) return '';
+  return '<p class="form-required-notice">すべての項目をご記入ください。</p>';
+}
+
 function renderField(field: FormField): string {
   const required = field.required ? ' required' : '';
   const placeholder = field.placeholder ? ` placeholder="${escapeHtml(field.placeholder)}"` : '';
-  const requiredMark = field.required ? '<span class="required-mark">*</span>' : '';
+  const requiredMark = field.required && !hideRequiredMarks ? '<span class="required-mark">*</span>' : '';
 
   // If this is an x_username field, render a fuzzy-search autocomplete input
   if (field.name === 'x_username') {
@@ -306,6 +324,7 @@ function injectStyles(): void {
     .form-field { margin-bottom: 20px; }
     .form-label { display: block; font-size: 14px; font-weight: 600; color: #333; margin-bottom: 6px; }
     .required-mark { color: #e53e3e; margin-left: 2px; }
+    .form-required-notice { font-size: 13px; color: #6B7A72; margin-top: 8px; }
     .form-input, .form-textarea, .form-select {
       width: 100%; padding: 12px; border: 1.5px solid #e0e0e0; border-radius: 8px;
       font-size: 16px; font-family: inherit; background: #fafafa;
@@ -594,12 +613,14 @@ function render(): void {
     attachFormEvents();
   } else {
     // ─── Single page layout (original) ───
+    hideRequiredMarks = allFieldsRequired(formDef.fields);
     const fieldsHtml = formDef.fields.map(renderField).join('');
     app.innerHTML = `
       <div class="form-page">
         <div class="form-header">
           <h1>${escapeHtml(formDef.name).replace(/\\n|\n/g, '<br>')}</h1>
           ${formDef.description && !formDef.onSubmitWebhookUrl ? `<p class="form-description">${escapeHtml(formDef.description).replace(/\\n|\n/g, '<br>')}</p>` : ''}
+          ${requiredNoticeHtml(formDef.fields)}
           ${profileHtml}
         </div>
         <form id="liff-form" class="form-body" novalidate>
@@ -794,6 +815,10 @@ function validateForm(): string | null {
   const { formDef } = state;
   if (!formDef) return null;
 
+  // 足りない項目は「一度に全部」返す。1つずつ出すと、直して送るたびに
+  // また別の項目で止められ、何回蹴られるのか分からないまま離脱してしまう。
+  const missing: string[] = [];
+
   for (const field of formDef.fields) {
     if (!field.required) continue;
 
@@ -801,18 +826,23 @@ function validateForm(): string | null {
       const checked = document.querySelectorAll<HTMLInputElement>(
         `input[name="${field.name}"]:checked`,
       );
-      if (checked.length === 0) return `${field.label} は必須項目です`;
+      if (checked.length === 0) missing.push(field.label);
     } else if (field.type === 'radio') {
       const checked = document.querySelector<HTMLInputElement>(
         `input[name="${field.name}"]:checked`,
       );
-      if (!checked) return `${field.label} は必須項目です`;
+      if (!checked) missing.push(field.label);
     } else {
       const el = document.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(
         `[name="${field.name}"]`,
       );
-      if (!el || !el.value.trim()) return `${field.label} は必須項目です`;
+      if (!el || !el.value.trim()) missing.push(field.label);
     }
+  }
+
+  if (missing.length === 1) return `${missing[0]} をご記入ください。`;
+  if (missing.length > 1) {
+    return `つぎの項目が空です。\n・${missing.join('\n・')}`;
   }
 
   // 予約表では 0 個も正しい回答なので、商品ごとに「必須」は付けられない。
@@ -840,7 +870,9 @@ async function submitForm(): Promise<void> {
     if (existing) existing.remove();
     const errEl = document.createElement('p');
     errEl.className = 'form-error-msg';
-    errEl.style.cssText = 'color:#e53e3e;font-size:14px;margin:8px 0;text-align:center;';
+    // 足りない項目の箇条書きを改行のまま見せるため pre-line。左寄せの方が読みやすい。
+    errEl.style.cssText =
+      'color:#e53e3e;font-size:14px;margin:8px 0;text-align:left;white-space:pre-line;line-height:1.7;';
     errEl.textContent = validationError;
     const submitBtn = document.getElementById('submitBtn');
     submitBtn?.parentElement?.insertBefore(errEl, submitBtn);

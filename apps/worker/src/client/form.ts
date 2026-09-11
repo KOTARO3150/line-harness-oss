@@ -815,6 +815,19 @@ function validateForm(): string | null {
     }
   }
 
+  // 予約表では 0 個も正しい回答なので、商品ごとに「必須」は付けられない。
+  // かわりに「どれも 0 個」のまま送ろうとしたときだけ止める。
+  // 全部 0 の予約は注文として意味がなく、送った側も届いたと思ってしまうため。
+  const quantityFields = formDef.fields.filter((f) => f.type === 'quantity');
+  if (quantityFields.length > 0) {
+    const total = quantityFields.reduce((sum, field) => {
+      const el = document.querySelector<HTMLSelectElement>(`[name="${field.name}"]`);
+      const n = Number(el?.value ?? '0');
+      return sum + (Number.isFinite(n) ? n : 0);
+    }, 0);
+    if (total <= 0) return 'ご希望の商品の個数を、1つ以上お選びください。';
+  }
+
   return null;
 }
 

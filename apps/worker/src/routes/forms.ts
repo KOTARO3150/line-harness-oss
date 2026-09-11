@@ -649,6 +649,128 @@ forms.post('/api/forms/:id/submit', async (c) => {
         })(),
       );
 
+      // ── 店側への通知 ──
+      // フォームの回答は「未対応」に入らない（未対応はお客様から届いた
+      // メッセージだけを数えている）。そのため注文が入っても誰も気づけない。
+      // 送り先が account_settings に入っているときだけ、その相手へ 1 通送る。
+      // 設定が無ければ何もしない = 既定では今までと同じ挙動。
+      sideEffects.push(
+        (async () => {
+          const customer = await getFriendById(db, friendId!);
+          const accountId = (customer as unknown as Record<string, string | null> | null)?.line_account_id;
+          if (!accountId) return;
+
+          const { getAccountSetting } = await import('@line-crm/db');
+          const { OWNER_NOTIFY_KEY, buildOwnerNotice } = await import('../services/form-owner-notice.js');
+          const raw = await getAccountSetting(db, accountId, OWNER_NOTIFY_KEY);
+          if (!raw) return;
+
+          // 値は JSON 文字列でも素の id でも受ける（手で入れたときに壊れないように）
+          let targetFriendId: string;
+          try {
+            const parsed = JSON.parse(raw);
+            targetFriendId = typeof parsed === 'string' ? parsed : String(raw);
+          } catch {
+            targetFriendId = raw;
+          }
+          targetFriendId = targetFriendId.trim();
+          if (!targetFriendId) return;
+
+          const owner = await getFriendById(db, targetFriendId);
+          if (!owner?.line_user_id) {
+            console.log('Owner notice: skipped, target friend has no line_user_id');
+            return;
+          }
+
+          const notice = buildOwnerNotice({
+            formName: form.name,
+            fields: form.fields
+              ? (JSON.parse(form.fields) as Array<{ name: string; label: string; type?: string }>)
+              : [],
+            data: submissionData as Record<string, unknown>,
+            friendDisplayName: customer?.display_name ?? null,
+            receivedAt: submission.created_at,
+          });
+          if (!notice) return;
+
+          const { getLineAccountById } = await import('@line-crm/db');
+          const ownerAccountId = (owner as unknown as Record<string, string | null>).line_account_id;
+          const account = ownerAccountId ? await getLineAccountById(db, ownerAccountId) : null;
+          const token = account?.channel_access_token ?? c.env.LINE_CHANNEL_ACCESS_TOKEN;
+
+          const { LineClient } = await import('@line-crm/line-sdk');
+          const { buildMessage } = await import('../services/step-delivery.js');
+          await new LineClient(token).pushMessage(owner.line_user_id, [buildMessage('text', notice)]);
+
+          await db
+            .prepare(
+              `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, created_at)
+               VALUES (?, ?, 'outgoing', 'text', ?, NULL, NULL, 'owner_notice', ?)`,
+            )
+            .bind(crypto.randomUUID(), owner.id, notice, jstNow())
+            .run();
+        })(),
+      );
+
+      // ── メール / カレンダーへの通知（LINE の配信通数を使わない） ──
+      // 既存の on_submit_webhook_url は「審査」用で、送信より前に呼ばれる。
+      // 相手が返事をしないとお客様の注文が却下されてしまうため使わない。
+      // こちらは注文を保存し終えたあとに投げ、失敗しても注文は残す。
+      sideEffects.push(
+        (async () => {
+          const customer = await getFriendById(db, friendId!);
+          const accountId = (customer as unknown as Record<string, string | null> | null)?.line_account_id;
+          if (!accountId) return;
+
+          const { getAccountSetting } = await import('@line-crm/db');
+          const { NOTIFY_WEBHOOK_KEY, buildNotifyPayload } = await import('../services/form-notify-webhook.js');
+          const raw = await getAccountSetting(db, accountId, NOTIFY_WEBHOOK_KEY);
+          if (!raw) return;
+
+          // 値は JSON 文字列でも素の URL でも受ける
+          let url: string;
+          try {
+            const parsed = JSON.parse(raw);
+            url = typeof parsed === 'string' ? parsed : String(raw);
+          } catch {
+            url = raw;
+          }
+          url = url.trim();
+          if (!/^https:\/\//.test(url)) {
+            console.log('Notify webhook: skipped, not an https url');
+            return;
+          }
+
+          const payload = buildNotifyPayload({
+            formId: form.id,
+            formName: form.name,
+            fields: form.fields
+              ? (JSON.parse(form.fields) as Array<{ name: string; label: string; type?: string }>)
+              : [],
+            data: submissionData as Record<string, unknown>,
+            submittedAt: submission.created_at,
+            lineDisplayName: customer?.display_name ?? null,
+          });
+          if (!payload) return;
+
+          // 待ち続けないよう自分で打ち切る。相手が落ちていても注文処理は終わっている。
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 10_000);
+          try {
+            const res = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+              signal: controller.signal,
+              redirect: 'follow',
+            });
+            if (!res.ok) console.error('Notify webhook failed:', res.status);
+          } finally {
+            clearTimeout(timer);
+          }
+        })(),
+      );
+
       if (sideEffects.length > 0) {
         const results = await Promise.allSettled(sideEffects);
         for (const r of results) {

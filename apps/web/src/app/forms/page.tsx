@@ -6,7 +6,7 @@ import Header from '@/components/layout/header'
 import { api, fetchApi, type FriendListItem } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 
-type FieldType = 'text' | 'tel' | 'email' | 'number' | 'textarea' | 'date' | 'select' | 'radio'
+type FieldType = 'text' | 'tel' | 'email' | 'number' | 'textarea' | 'date' | 'select' | 'radio' | 'quantity'
 type ChartTarget = '' | 'customer_name' | 'customer_name_kana' | 'birth_date' | 'phone' | 'allergies' | 'current_medications' | 'safety_notes' | 'general_notes' | 'chief_complaint' | 'observations' | 'recommendation' | 'products' | 'usage_instructions' | 'follow_up_plan'
 type TagRuleOperator = 'equals' | 'contains' | 'not_empty'
 
@@ -25,6 +25,10 @@ interface FormField {
   options?: string[]
   chartTarget?: ChartTarget
   tagRules?: TagRule[]
+  /** type: 'quantity' のときの単価（円）。未入力なら金額を出さず個数だけ聞く。 */
+  unitPrice?: number
+  /** type: 'quantity' で選べる最大個数。既定 10。 */
+  maxQuantity?: number
 }
 
 interface HarnessForm {
@@ -33,6 +37,8 @@ interface HarnessForm {
   description: string | null
   fields: FormField[]
   onSubmitTagId: string | null
+  onSubmitMessageType: 'text' | 'flex' | null
+  onSubmitMessageContent: string | null
   submitCount: number
   isActive: boolean
 }
@@ -54,7 +60,31 @@ const fieldTypeLabels: Record<FieldType, string> = {
   date: '日付',
   select: '選択リスト',
   radio: 'ひとつ選択',
+  quantity: '商品の個数（予約表）',
 }
+
+// 予約表のひな形。
+// 「何を何個」だけで予約表として成立するので、単価は空のままでも使える。
+// 単価を入れた商品があるときだけ、お客様の画面に合計金額が出る。
+const orderPresetDescription = 'ご希望の商品と個数をお選びください。入荷しましたらこちらのLINEでご連絡します。'
+const orderPresetReply = `ご予約ありがとうございます。
+下記の内容でお受けしました。
+
+{{answers}}
+
+入荷しましたら、こちらの LINE でご連絡します。
+お渡しはお店で、お支払いもそのときで大丈夫です。
+
+鈴木薬舗`
+
+const orderPresetFields: FormField[] = [
+  { name: 'customer_name', label: 'お名前', type: 'text', required: true, placeholder: '鈴木 太郎', chartTarget: 'customer_name' },
+  { name: 'phone', label: '電話番号', type: 'tel', required: true, placeholder: '090-1234-5678', chartTarget: 'phone' },
+  { name: 'item_1', label: '商品１', type: 'quantity', required: false, maxQuantity: 10 },
+  { name: 'item_2', label: '商品２', type: 'quantity', required: false, maxQuantity: 10 },
+  { name: 'item_3', label: '商品３', type: 'quantity', required: false, maxQuantity: 10 },
+  { name: 'note', label: '通信欄', type: 'textarea', required: false, placeholder: 'ご予約品やお伝えすることがあればご記入ください。' },
+]
 
 const chartTargetLabels: Array<[ChartTarget, string]> = [
   ['', 'カルテへは自動整理しない'],
@@ -76,6 +106,8 @@ export default function FormsPage() {
   const [selectedTagId, setSelectedTagId] = useState('')
   const [newTagName, setNewTagName] = useState('相談希望')
   const [fields, setFields] = useState<FormField[]>(initialFields)
+  const [replyMessage, setReplyMessage] = useState('')
+  const [replyType, setReplyType] = useState<'text' | 'flex'>('text')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingActive, setEditingActive] = useState(true)
   const [loading, setLoading] = useState(true)
@@ -231,11 +263,27 @@ export default function FormsPage() {
     setSelectedTagId('')
     setNewTagName('相談希望')
     setFields(initialFields.map((field) => ({ ...field })))
+    setReplyMessage('')
+    setReplyType('text')
   }
 
-  const startEdit = (form: HarnessForm) => {
-    setEditingId(form.id)
-    setEditingActive(form.isActive)
+  // 予約表のひな形を editor に流し込む。商品名を書き換えるだけで使える状態にする。
+  const loadOrderPreset = () => {
+    setEditingId(null)
+    setEditingActive(true)
+    setName('商品ご予約フォーム')
+    setDescription(orderPresetDescription)
+    setSelectedTagId('')
+    setNewTagName('商品予約')
+    setFields(orderPresetFields.map((field) => ({ ...field })))
+    setReplyMessage(orderPresetReply)
+    setReplyType('text')
+    setError('')
+    setSuccess('')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  const fillEditor = (form: HarnessForm) => {
     setName(form.name)
     setDescription(form.description || '')
     setSelectedTagId(form.onSubmitTagId || '')
@@ -246,9 +294,27 @@ export default function FormsPage() {
       chartTarget: field.chartTarget || '',
       tagRules: field.tagRules || [],
     })))
+    setReplyMessage(form.onSubmitMessageContent || '')
+    setReplyType(form.onSubmitMessageType === 'flex' ? 'flex' : 'text')
     setError('')
     setSuccess('')
     window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  const startEdit = (form: HarnessForm) => {
+    setEditingId(form.id)
+    setEditingActive(form.isActive)
+    fillEditor(form)
+  }
+
+  // 複製。元のフォームには触らず、中身だけ写して新規作成の状態にする。
+  // 前回の予約表をそのまま持ってきて、商品名と価格を書き換える使い方を想定している。
+  const duplicateForm = (form: HarnessForm) => {
+    setEditingId(null)
+    setEditingActive(true)
+    fillEditor(form)
+    setName(`${form.name}のコピー`)
+    setSuccess('前回の内容を写しました。商品名などを書き換えて「フォームと自動タグを作成」を押すと、新しいフォームになります。元のフォームはそのまま残ります。')
   }
 
   const openPreview = (form: HarnessForm) => {
@@ -296,6 +362,17 @@ export default function FormsPage() {
     if (fields.some((field) => (field.type === 'select' || field.type === 'radio') && !(field.options || []).length)) return setError('選択式の質問には選択肢を1つ以上入力してください。')
     if (fields.some((field) => field.tagRules?.some((rule) => !rule.tagId || (rule.operator !== 'not_empty' && !rule.value.trim())))) return setError('条件タグの条件値とタグを入力してください。')
 
+    // Flex（JSON）の返信は、書式が崩れたまま保存すると送信時に JSON が
+    // そのままお客様へ文字として届いてしまう（エラーにならず届く）。
+    // 保存前にここで止める。
+    if (replyMessage.trim() && replyType === 'flex') {
+      try {
+        JSON.parse(replyMessage)
+      } catch {
+        return setError('返信（Flex形式）のJSONが壊れています。保存すると、このJSONがそのままお客様へ文字として届いてしまいます。書式を直すか、この欄を空にしてください。')
+      }
+    }
+
     setSaving(true)
     try {
       let tagId = selectedTagId || null
@@ -332,6 +409,16 @@ export default function FormsPage() {
         ...field,
         name: field.name || `field_${index + 1}`,
         label: field.label.trim(),
+        // 単価と最大個数は「商品の個数」以外では意味がないので落とす。
+        // 単価が空のときはキー自体を送らない（お客様の画面に合計金額を出さないため）。
+        ...(field.type === 'quantity'
+          ? {
+              ...(typeof field.unitPrice === 'number' && Number.isFinite(field.unitPrice) && field.unitPrice > 0
+                ? { unitPrice: field.unitPrice }
+                : { unitPrice: undefined }),
+              maxQuantity: Math.max(1, Math.min(Math.round(field.maxQuantity ?? 10), 99)),
+            }
+          : { unitPrice: undefined, maxQuantity: undefined }),
         ...(field.name === 'consultation_method' && methodTagIds.size > 0
           ? {
               tagRules: [
@@ -349,6 +436,8 @@ export default function FormsPage() {
           description: description.trim() || null,
           fields: normalizedFields,
           onSubmitTagId: tagId,
+          onSubmitMessageType: replyMessage.trim() ? replyType : null,
+          onSubmitMessageContent: replyMessage.trim() || null,
           saveToMetadata: true,
           ...(editingId ? { isActive: editingActive } : {}),
         }),
@@ -376,7 +465,14 @@ export default function FormsPage() {
           <section>
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-base font-semibold text-gray-900">1. {editingId ? '既存フォームを編集' : 'フォームの名前'}</h2>
-              {editingId && <button type="button" onClick={resetEditor} className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50">編集をやめる</button>}
+              <div className="flex flex-wrap items-center gap-2">
+                {!editingId && (
+                  <button type="button" onClick={loadOrderPreset} className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-800 hover:bg-emerald-100">
+                    予約表のひな形を読み込む
+                  </button>
+                )}
+                {editingId && <button type="button" onClick={resetEditor} className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50">編集をやめる</button>}
+              </div>
             </div>
             <div className="mt-3 space-y-3">
               <input value={name} onChange={(e) => setName(e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm" placeholder="例：漢方相談フォーム" />
@@ -400,7 +496,16 @@ export default function FormsPage() {
                 <div key={`${field.name}-${index}`} className="rounded-lg border border-gray-200 bg-gray-50 p-3">
                   <div className="grid gap-2 sm:grid-cols-[1fr_150px_auto]">
                     <input value={field.label} onChange={(e) => updateField(index, { label: e.target.value })} className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm" aria-label={`${index + 1}番目の質問`} />
-                    <select value={field.type} onChange={(e) => updateField(index, { type: e.target.value as FieldType })} className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm">
+                    <select
+                      value={field.type}
+                      onChange={(e) => {
+                        const next = e.target.value as FieldType
+                        // 個数は 0 個も正しい回答なので「必須」にはできない。
+                        // 代わりに「1つ以上選んでください」をお客様の画面側で確かめている。
+                        updateField(index, next === 'quantity' ? { type: next, required: false } : { type: next })
+                      }}
+                      className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+                    >
                       {Object.entries(fieldTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                     </select>
                     <button type="button" onClick={() => removeField(index)} className="px-2 text-sm text-red-500 hover:text-red-700">削除</button>
@@ -417,10 +522,56 @@ export default function FormsPage() {
                       />
                     </label>
                   )}
-                  <label className="mt-2 flex items-center gap-2 text-sm text-gray-600">
-                    <input type="checkbox" checked={field.required} onChange={(e) => updateField(index, { required: e.target.checked })} className="rounded border-gray-300" />
-                    必須回答にする
-                  </label>
+                  {field.type === 'quantity' && (
+                    <div className="mt-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                      <p className="text-xs text-emerald-900">
+                        上の質問文が、そのまま商品名としてお客様に表示されます。例：<span className="font-semibold">板藍茶 120包</span>
+                      </p>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                        <label className="block text-xs font-medium text-gray-600">
+                          単価（円）／空欄でもOK
+                          <input
+                            type="number"
+                            min={0}
+                            inputMode="numeric"
+                            value={typeof field.unitPrice === 'number' ? field.unitPrice : ''}
+                            onChange={(event) => {
+                              const raw = event.target.value.trim()
+                              const parsed = Number(raw)
+                              updateField(index, { unitPrice: raw === '' || !Number.isFinite(parsed) ? undefined : parsed })
+                            }}
+                            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+                            placeholder="8640"
+                          />
+                        </label>
+                        <label className="block text-xs font-medium text-gray-600">
+                          選べる最大個数
+                          <input
+                            type="number"
+                            min={1}
+                            max={99}
+                            inputMode="numeric"
+                            value={field.maxQuantity ?? 10}
+                            onChange={(event) => {
+                              const parsed = Number(event.target.value)
+                              updateField(index, { maxQuantity: Number.isFinite(parsed) ? parsed : 10 })
+                            }}
+                            className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+                          />
+                        </label>
+                      </div>
+                      <p className="mt-2 text-xs text-emerald-800">
+                        単価を入れた商品が1つ以上あるときだけ、お客様の画面の下に<span className="font-semibold">合計金額</span>が自動で出ます。
+                        単価が分からないときは空欄のままで、「何を何個」だけの予約表になります。
+                      </p>
+                    </div>
+                  )}
+                  {field.type !== 'quantity' && (
+                    <label className="mt-2 flex items-center gap-2 text-sm text-gray-600">
+                      <input type="checkbox" checked={field.required} onChange={(e) => updateField(index, { required: e.target.checked })} className="rounded border-gray-300" />
+                      必須回答にする
+                    </label>
+                  )}
                   <div className="mt-3 border-t border-gray-200 pt-3">
                     <label className="block text-xs font-medium text-gray-600">相談カルテの保存先</label>
                     <select value={field.chartTarget || ''} onChange={(e) => updateField(index, { chartTarget: e.target.value as ChartTarget })} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm">
@@ -464,6 +615,26 @@ export default function FormsPage() {
             </div>
           </section>
 
+          <section>
+            <h2 className="text-base font-semibold text-gray-900">4. 回答したお客様へ届く返信</h2>
+            <p className="mt-1 text-sm text-gray-500">
+              空欄にすると返信しません。<span className="font-medium text-gray-700">{'{{answers}}'}</span> と書いた場所に、お客様が選んだ内容がそのまま入ります。
+            </p>
+            <textarea
+              value={replyMessage}
+              onChange={(event) => setReplyMessage(event.target.value)}
+              rows={9}
+              className="mt-3 w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm"
+              placeholder={orderPresetReply}
+            />
+            {replyType === 'flex' && (
+              <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                このフォームは Flex（JSON）形式で返信します。書式を崩すと返信できなくなるので、文章だけを入れ替えてください。
+              </p>
+            )}
+            <p className="mt-2 text-xs text-amber-700">この返信はLINEの配信通数を1通消費します（お客様1人につき1通）。</p>
+          </section>
+
           {error && <div className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
           {success && <div className="rounded-lg bg-green-50 px-4 py-3 text-sm text-green-700">{success}</div>}
 
@@ -502,6 +673,9 @@ export default function FormsPage() {
                     </button>
                     <button type="button" onClick={() => void openSend(form)} className="rounded-lg bg-[#06C755] px-3 py-2 text-xs font-semibold text-white hover:bg-[#05b84e]">
                       お客様へ送る
+                    </button>
+                    <button type="button" onClick={() => duplicateForm(form)} className="col-span-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800 hover:bg-emerald-100">
+                      これを複製して次の予約表を作る
                     </button>
                   </div>
                 </div>
@@ -575,7 +749,14 @@ export default function FormsPage() {
                         ? <select value={previewAnswers[field.name] || ''} onChange={(event) => setPreviewAnswers((current) => ({ ...current, [field.name]: event.target.value }))} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"><option value="">選択してください</option>{(field.options || []).map((option) => <option key={option} value={option}>{option}</option>)}</select>
                         : field.type === 'radio'
                           ? <div className="space-y-2">{(field.options || []).map((option) => <label key={option} className="flex items-center gap-2 rounded-lg border p-2 text-sm"><input type="radio" name={`preview-${field.name}`} value={option} checked={previewAnswers[field.name] === option} onChange={(event) => setPreviewAnswers((current) => ({ ...current, [field.name]: event.target.value }))} />{option}</label>)}</div>
-                          : <input type={field.type} value={previewAnswers[field.name] || ''} onChange={(event) => setPreviewAnswers((current) => ({ ...current, [field.name]: event.target.value }))} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder={field.placeholder} />}
+                          : field.type === 'quantity'
+                            ? <div className="flex items-center gap-2">
+                                <select value={previewAnswers[field.name] || '0'} onChange={(event) => setPreviewAnswers((current) => ({ ...current, [field.name]: event.target.value }))} className="w-24 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm">
+                                  {Array.from({ length: Math.max(1, Math.min(Math.round(field.maxQuantity ?? 10), 99)) + 1 }, (_, n) => <option key={n} value={String(n)}>{n}</option>)}
+                                </select>
+                                <span className="text-sm text-gray-500">個{typeof field.unitPrice === 'number' ? `（単価 ${field.unitPrice.toLocaleString('ja-JP')}円）` : ''}</span>
+                              </div>
+                            : <input type={field.type} value={previewAnswers[field.name] || ''} onChange={(event) => setPreviewAnswers((current) => ({ ...current, [field.name]: event.target.value }))} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm" placeholder={field.placeholder} />}
                   </label>
                 ))}
               </div>

@@ -40,6 +40,12 @@ interface FormField {
   unitPrice?: number;
   /** type: 'quantity' で選べる最大個数。既定 10。 */
   maxQuantity?: number;
+  /**
+   * type: 'date' のとき true にすると、営業日だけを並べた選択肢になる。
+   * 日曜・祝日は最初から出ないので、定休日を選んでしまうことが起こらない。
+   * 生年月日のような過去の日付には付けないこと（未来の営業日しか出なくなる）。
+   */
+  businessDays?: boolean;
 }
 
 interface FormDef {
@@ -168,6 +174,64 @@ function totalRowHtml(fields: FormField[]): string {
     <p class="form-total-note">お選びいただいた内容の合計です（税込）。</p>`;
 }
 
+// ─── 定休日（日曜・祝日） ─────────────────────────────────────────────
+// 日祝は店が閉まっているので、フォームに出てはいけない。
+// 「選べてしまってから怒られる」のは、お客様にとっていちばん嫌な形なので、
+// 候補そのものを作らない。
+//
+// 祝日は法律で毎年決まるため計算では出せない（振替休日・国民の休日がある）。
+// 内閣府の「国民の祝日について」の一覧を写したもの。2027年までしか入っていない。
+// 一覧の範囲より先の日付は、判定せずそのまま出す（黙って弾くより、届いてから
+// こちらでお返事したほうが安全）。表は毎年2月ごろに足すこと。
+const HOLIDAYS: string[] = [
+  // 2026年
+  '2026-01-01', '2026-01-12', '2026-02-11', '2026-02-23', '2026-03-20',
+  '2026-04-29', '2026-05-03', '2026-05-04', '2026-05-05', '2026-05-06',
+  '2026-07-20', '2026-08-11', '2026-09-21', '2026-09-22', '2026-09-23',
+  '2026-10-12', '2026-11-03', '2026-11-23',
+  // 2027年
+  '2027-01-01', '2027-01-11', '2027-02-11', '2027-02-23', '2027-03-21',
+  '2027-03-22', '2027-04-29', '2027-05-03', '2027-05-04', '2027-05-05',
+  '2027-07-19', '2027-08-11', '2027-09-20', '2027-09-23', '2027-10-11',
+  '2027-11-03', '2027-11-23',
+];
+const HOLIDAY_SET = new Set(HOLIDAYS);
+/** 祝日一覧が効く最終年。これより先は判定しない。 */
+const HOLIDAY_TABLE_LAST_YEAR = 2027;
+
+function ymd(d: Date): string {
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+/** 日曜または祝日なら true。一覧の範囲外は false（＝営業日として扱う）。 */
+function isClosedDay(d: Date): boolean {
+  if (d.getFullYear() > HOLIDAY_TABLE_LAST_YEAR) return false;
+  if (d.getDay() === 0) return true;
+  return HOLIDAY_SET.has(ymd(d));
+}
+
+const WEEKDAY_JA = ['日', '月', '火', '水', '木', '金', '土'];
+
+/**
+ * 翌日から数えて、営業日だけを最大 days 日ぶん並べた選択肢を作る。
+ * 当日を入れないのは、フォームが届いてから返事をするまでに時間がかかるため。
+ */
+function businessDayOptions(days = 60): string {
+  const out: string[] = ['<option value="">選んでください</option>'];
+  const cursor = new Date();
+  cursor.setHours(0, 0, 0, 0);
+  for (let i = 0; i < days; i++) {
+    cursor.setDate(cursor.getDate() + 1);
+    if (isClosedDay(cursor)) continue;
+    const v = ymd(cursor);
+    const label = `${cursor.getMonth() + 1}月${cursor.getDate()}日（${WEEKDAY_JA[cursor.getDay()]}）`;
+    out.push(`<option value="${v}">${label}</option>`);
+  }
+  return out.join('');
+}
+
 /**
  * 質問がすべて必須のフォームでは、「*」を全部の行に付けても情報量がない。
  * 印が並ぶほど回答者は身構えるので、印は消して、冒頭に一言だけ置く。
@@ -287,6 +351,16 @@ function renderField(field: FormField): string {
     }
 
     default:
+      // 予約の日にちは、日曜・祝日を含まない営業日の一覧から選ばせる。
+      // カレンダー入力では定休日を灰色にできないため、候補を作らない形にしている。
+      if (field.type === 'date' && field.businessDays) {
+        inputHtml = `<select
+        name="${escapeHtml(field.name)}"
+        id="field-${escapeHtml(field.name)}"
+        class="form-select"${required}>${businessDayOptions()}</select>
+        <p class="form-hint">日曜・祝日は定休日のため、候補に出ていません。</p>`;
+        break;
+      }
       inputHtml = `<input
         type="${escapeHtml(field.type)}"
         name="${escapeHtml(field.name)}"
@@ -325,6 +399,7 @@ function injectStyles(): void {
     .form-label { display: block; font-size: 14px; font-weight: 600; color: #333; margin-bottom: 6px; }
     .required-mark { color: #e53e3e; margin-left: 2px; }
     .form-required-notice { font-size: 13px; color: #6B7A72; margin-top: 8px; }
+    .form-hint { font-size: 12.5px; color: #6B7A72; margin: 6px 0 0; }
     .form-input, .form-textarea, .form-select {
       width: 100%; padding: 12px; border: 1.5px solid #e0e0e0; border-radius: 8px;
       font-size: 16px; font-family: inherit; background: #fafafa;
@@ -837,6 +912,21 @@ function validateForm(): string | null {
         `[name="${field.name}"]`,
       );
       if (!el || !el.value.trim()) missing.push(field.label);
+    }
+  }
+
+  // 念のための最後の砦。フォームを開いたまま日付をまたいだり、値を書き換えられた
+  // ときでも、定休日のまま受け付けてしまわないようにする。
+  for (const field of formDef.fields) {
+    if (field.type !== 'date' || !field.businessDays) continue;
+    const el = document.querySelector<HTMLSelectElement>(`[name="${field.name}"]`);
+    const v = (el?.value ?? '').trim();
+    if (!v) continue;
+    const parts = v.split('-').map(Number);
+    if (parts.length !== 3) continue;
+    const d = new Date(parts[0], parts[1] - 1, parts[2]);
+    if (isClosedDay(d)) {
+      return `${field.label} が定休日（日曜・祝日）になっています。別の日をお選びください。`;
     }
   }
 

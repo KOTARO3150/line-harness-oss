@@ -69,7 +69,8 @@
     "060_order_editing.sql",
     "061_order_cancellation_returns.sql",
     "062_order_shipping_notification.sql",
-    "063_chart_view_registry.sql"
+    "063_chart_view_registry.sql",
+    "064_line_send_pause.sql"
   ],
-  "migrationCount": 70
+  "migrationCount": 71
 }

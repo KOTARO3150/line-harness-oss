@@ -576,6 +576,14 @@ CREATE TABLE line_accounts (
   updated_at             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 , login_channel_id TEXT, login_channel_secret TEXT, liff_id TEXT, token_expires_at TEXT);
 
+CREATE TABLE line_send_pause (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  paused INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+  reason TEXT,
+  updated_by_staff_id TEXT,
+  updated_at TEXT
+);
+
 CREATE TABLE link_clicks (
   id TEXT PRIMARY KEY,
   tracked_link_id TEXT NOT NULL REFERENCES tracked_links (id) ON DELETE CASCADE,

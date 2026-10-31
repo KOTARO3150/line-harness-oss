@@ -11,7 +11,7 @@ import {
   createBroadcastInsight,
 } from '@line-crm/db';
 import type { Broadcast } from '@line-crm/db';
-import type { LineClient } from '@line-crm/line-sdk';
+import { LineSendPausedError, type LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js';
 
@@ -140,6 +140,9 @@ export async function processBroadcastSend(
           await db.batch(logStmts);
         } catch (err) {
           console.error(`Multicast batch ${i / MULTICAST_BATCH_SIZE} failed:`, err);
+          // 送信の途中で緊急停止が押されたら、残りのバッチは送らずに抜ける。
+          // 送れた件数は successCount に残る（全件送ったことにはならない）。
+          if (err instanceof LineSendPausedError) break;
           // Continue with next batch; failed batch is not logged
         }
       }

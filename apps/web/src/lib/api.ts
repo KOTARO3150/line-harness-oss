@@ -1996,9 +1996,9 @@ export const orderApi = {
   }) => fetchApi<{ success: boolean; data: OrderLedgerItem; notification?: { sent: boolean; error?: string } | null }>(`/api/orders/${encodeURIComponent(id)}/status`, {
     method: 'PATCH', body: JSON.stringify(body),
   }),
-  bulkAdvance: (ids: string[], status: OrderStatus) =>
+  bulkAdvance: (lineAccountId: string, ids: string[], status: OrderStatus) =>
     fetchApi<{ success: boolean; data: { updated: number } }>('/api/orders/bulk-advance', {
-      method: 'POST', body: JSON.stringify({ ids, status }),
+      method: 'POST', body: JSON.stringify({ lineAccountId, ids, status }),
     }),
   updateLifecycle: (id: string, body: {
     lineAccountId: string
@@ -2165,3 +2165,19 @@ export const eventsApi = {
       withAccount('/api/events/admin/events/notifications/pending', accountId),
     ),
 };
+
+// LINE送信の緊急停止スイッチ。止めるのは担当者全員、再開は owner / admin。
+export type LineSendPauseState = {
+  paused: boolean
+  reason: string | null
+  updatedByStaffId: string | null
+  updatedAt: string | null
+}
+
+export const lineSendPauseApi = {
+  get: () => fetchApi<{ success: boolean; data: LineSendPauseState }>('/api/line-send-pause'),
+  set: (paused: boolean, reason?: string) =>
+    fetchApi<{ success: boolean; data: LineSendPauseState }>('/api/line-send-pause', {
+      method: 'POST', body: JSON.stringify({ paused, reason: reason ?? null }),
+    }),
+}

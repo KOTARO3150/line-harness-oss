@@ -335,10 +335,10 @@ export default function OrdersPage() {
     const from = stages[index - 1]?.status
     if (!from) return
     const ids = [...checked[from]]
-    if (ids.length === 0) return
+    if (ids.length === 0 || !selectedAccountId) return
     setMovingId('bulk'); setError('')
     try {
-      await orderApi.bulkAdvance(ids, status)
+      await orderApi.bulkAdvance(selectedAccountId, ids, status)
       setChecked((current) => ({ ...current, [from]: new Set() }))
       await load()
     } catch { setError('一括変更できませんでした。進捗が変わっていないか確認してください。') }
@@ -373,7 +373,11 @@ export default function OrdersPage() {
       setLifecycleOrder(null)
       setShowClosed(true)
       await load()
-    } catch { setError('処理を保存できませんでした。入力内容と現在の状態を確認してください。') }
+    } catch (err) {
+      setError(err instanceof Error && err.message.endsWith('403')
+        ? '返品・返金と発送済み注文の取り消しは、管理者だけが行えます。'
+        : '処理を保存できませんでした。入力内容と現在の状態を確認してください。')
+    }
     finally { setSaving(false) }
   }
 

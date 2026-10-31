@@ -19,3 +19,6 @@ apps/worker/dist/
 .claude/worktrees/
 .line-harness-setup.json
 .line-harness-config.json
+
+# Local-only operational notes (production identifiers). Never commit.
+/ops/

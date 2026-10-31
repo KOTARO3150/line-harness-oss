@@ -127,8 +127,13 @@ orders.get('/api/orders', async (c) => {
 });
 
 orders.get('/api/orders/:id/history', async (c) => {
+  const lineAccountId = c.req.query('lineAccountId');
+  if (!lineAccountId) return c.json({ success: false, error: 'LINEアカウントが必要です' }, 400);
   const order = await getOrder(c.env.DB, c.req.param('id'));
   if (!order) return c.json({ success: false, error: '注文が見つかりません' }, 404);
+  if (order.line_account_id !== lineAccountId) {
+    return c.json({ success: false, error: 'このLINEアカウントの注文ではありません' }, 403);
+  }
   const history = await getOrderStatusHistory(c.env.DB, order.id);
   return c.json({ success: true, data: history.map((row) => ({
     id: row.id, fromStatus: row.from_status, toStatus: row.to_status,
@@ -364,6 +369,13 @@ orders.patch('/api/orders/:id/lifecycle', async (c) => {
   if (current.line_account_id !== body.lineAccountId) {
     return c.json({ success: false, error: 'このLINEアカウントの注文ではありません' }, 403);
   }
+  // 発送済みを戻せないのと同じ考え方で、お金が動く返品・返金と、
+  // 発送済み注文の取り消しは管理者以上に限る。発送前のキャンセル・誤登録の取り消しは staff も可。
+  const needsManager = body.action === 'return_refund' || body.action === 'update_refund' ||
+    (body.action === 'void' && current.status === 'shipped');
+  if (needsManager && c.get('staff').role === 'staff') {
+    return c.json({ success: false, error: '返品・返金と発送済み注文の取り消しには管理者権限が必要です' }, 403);
+  }
   const reason = body.reason?.trim() || current.lifecycle_reason?.trim() || '';
   if (!reason) return c.json({ success: false, error: '処理理由を入力してください' }, 400);
 
@@ -433,7 +445,8 @@ orders.patch('/api/orders/:id/lifecycle', async (c) => {
 });
 
 orders.post('/api/orders/bulk-advance', async (c) => {
-  const body = await c.req.json<{ ids?: string[]; status?: OrderStatus }>();
+  const body = await c.req.json<{ ids?: string[]; status?: OrderStatus; lineAccountId?: string }>();
+  if (!body.lineAccountId) return c.json({ success: false, error: 'LINEアカウントが必要です' }, 400);
   const ids = [...new Set((body.ids ?? []).filter(Boolean))];
   if (ids.length === 0 || !isStatus(body.status)) return c.json({ success: false, error: '注文と進捗を選んでください' }, 400);
   if (body.status === 'shipped') return c.json({ success: false, error: '発送済みは一括処理できません' }, 400);
@@ -444,8 +457,9 @@ orders.post('/api/orders/bulk-advance', async (c) => {
   const timestampColumn = body.status === 'preparing' ? 'preparing_at' : 'ready_to_ship_at';
   const placeholders = ids.map(() => '?').join(',');
   const eligible = await c.env.DB.prepare(
-    `SELECT id FROM orders WHERE id IN (${placeholders}) AND status = ? AND lifecycle_status = 'active'`,
-  ).bind(...ids, previous).all<{ id: string }>();
+    `SELECT id FROM orders
+      WHERE id IN (${placeholders}) AND line_account_id = ? AND status = ? AND lifecycle_status = 'active'`,
+  ).bind(...ids, body.lineAccountId, previous).all<{ id: string }>();
   if (eligible.results.length !== ids.length) {
     return c.json({ success: false, error: '選択中に現在の段階と異なる注文があります。再読み込みしてください' }, 409);
   }
@@ -453,8 +467,8 @@ orders.post('/api/orders/bulk-advance', async (c) => {
   await c.env.DB.batch([
     c.env.DB.prepare(
       `UPDATE orders SET status = ?, ${timestampColumn} = ?, updated_by_staff_id = ?, updated_at = ?
-        WHERE id IN (${placeholders}) AND status = ? AND lifecycle_status = 'active'`,
-    ).bind(body.status, now, staffId, now, ...ids, previous),
+        WHERE id IN (${placeholders}) AND line_account_id = ? AND status = ? AND lifecycle_status = 'active'`,
+    ).bind(body.status, now, staffId, now, ...ids, body.lineAccountId, previous),
     ...ids.map((id) => c.env.DB.prepare(
       `INSERT INTO order_status_history
         (id, order_id, from_status, to_status, staff_id, note, created_at)

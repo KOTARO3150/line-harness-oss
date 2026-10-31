@@ -1996,9 +1996,9 @@ export const orderApi = {
   }) => fetchApi<{ success: boolean; data: OrderLedgerItem; notification?: { sent: boolean; error?: string } | null }>(`/api/orders/${encodeURIComponent(id)}/status`, {
     method: 'PATCH', body: JSON.stringify(body),
   }),
-  bulkAdvance: (ids: string[], status: OrderStatus) =>
+  bulkAdvance: (lineAccountId: string, ids: string[], status: OrderStatus) =>
     fetchApi<{ success: boolean; data: { updated: number } }>('/api/orders/bulk-advance', {
-      method: 'POST', body: JSON.stringify({ ids, status }),
+      method: 'POST', body: JSON.stringify({ lineAccountId, ids, status }),
     }),
   updateLifecycle: (id: string, body: {
     lineAccountId: string

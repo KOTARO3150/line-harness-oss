@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 import { usePathname } from 'next/navigation'
 import Sidebar from './layout/sidebar'
 import { UpdateBanner } from './update/update-banner'
+import { SendPauseBanner } from './line-send-pause/send-pause-banner'
 import AuthGuard from './auth-guard'
 import { AccountProvider } from '@/contexts/account-context'
 
@@ -29,6 +30,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           {/* Phase 6: banner above sidebar+header so it pins to the top of the
               admin shell. Renders nothing while loading; one of latest/fork/
               upgrade once /admin/version + manifest resolve. */}
+          <SendPauseBanner />
           <UpdateBanner />
           <div className="flex flex-1 min-h-0">
             <Sidebar />

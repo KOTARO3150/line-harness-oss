@@ -15,6 +15,7 @@ import type { SegmentCondition } from '../services/segment-query.js';
 import { getLineAccountById } from '@line-crm/db';
 import type { Env } from '../index.js';
 import { requireRole } from '../middleware/role-guard.js';
+import { isLineSendPausedSafe } from '../services/send-pause.js';
 
 const broadcasts = new Hono<Env>();
 
@@ -22,6 +23,15 @@ const broadcasts = new Hono<Env>();
 // 閲覧（GET）と宛先件数の見積もり（/api/segments/count）は担当者全員に開けたまま。
 // 個々のハンドラではなくメソッド＋パスで一括してかけている（ハンドラの型が崩れないため）。
 broadcasts.on(['POST', 'PUT', 'PATCH', 'DELETE'], ['/api/broadcasts', '/api/broadcasts/*'], requireRole('owner', 'admin'));
+
+// 緊急停止中は送信系を受け付けない。送信処理は「失敗したバッチは飛ばして完了扱い」に
+// なる箇所があるため、途中で止まって『送ったことになる』のを避けて、入口で断る。
+broadcasts.on('POST', ['/api/broadcasts/:id/send', '/api/broadcasts/:id/send-segment', '/api/broadcasts/:id/test-send'], async (c, next) => {
+  if (await isLineSendPausedSafe(c.env.DB)) {
+    return c.json({ success: false, error: 'LINE送信は緊急停止中です。再開してから送信してください' }, 409);
+  }
+  await next();
+});
 
 /**
  * Parse a D1 JSON-array column. Returns:

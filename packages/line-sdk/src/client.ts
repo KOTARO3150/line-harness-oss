@@ -23,6 +23,54 @@ export interface FollowerIdsPage {
   next?: string;
 }
 
+// ─── 緊急停止（送信ガード） ──────────────────────────────────────────────────
+//
+// お客様にメッセージが届く API（push / multicast / broadcast / reply / narrowcast）は、
+// すべて LineClient.request() を通る。ここ1か所で止めれば、呼び出し元が何十か所あっても
+// 送信を漏れなく止められる。リッチメニュー操作・プロフィール取得・既読などは止めない。
+
+const MESSAGE_SEND_PATHS = new Set([
+  '/v2/bot/message/push',
+  '/v2/bot/message/multicast',
+  '/v2/bot/message/broadcast',
+  '/v2/bot/message/reply',
+  '/v2/bot/message/narrowcast',
+]);
+
+/** 緊急停止中に送ろうとしたときに投げる。呼び出し元は通常の送信失敗として扱える。 */
+export class LineSendPausedError extends Error {
+  constructor() {
+    super('LINE送信は緊急停止中です');
+    this.name = 'LineSendPausedError';
+  }
+}
+
+/** true を返すと送信を止める。判定自体が失敗したときは送信を止めない（停止機能の故障で全配信が止まるのを防ぐ）。 */
+export type LineSendGuard = () => Promise<boolean>;
+
+let sendGuard: LineSendGuard | null = null;
+
+/** 送信前に毎回呼ばれる判定を登録する。null で解除。 */
+export function setLineSendGuard(guard: LineSendGuard | null): void {
+  sendGuard = guard;
+}
+
+export function isMessageSendPath(method: string, path: string): boolean {
+  return method === 'POST' && MESSAGE_SEND_PATHS.has(path);
+}
+
+async function assertSendAllowed(method: string, path: string): Promise<void> {
+  if (!sendGuard || !isMessageSendPath(method, path)) return;
+  let paused = false;
+  try {
+    paused = await sendGuard();
+  } catch (err) {
+    console.error('[line-send-guard] 停止状態を確認できなかったため送信を続けます:', err);
+    return;
+  }
+  if (paused) throw new LineSendPausedError();
+}
+
 export class LineClient {
   constructor(private readonly channelAccessToken: string) {}
 
@@ -33,6 +81,7 @@ export class LineClient {
     path: string,
     body?: unknown,
   ): Promise<{ data: unknown; headers: Headers }> {
+    await assertSendAllowed(method, path);
     const url = `${LINE_API_BASE}${path}`;
 
     const options: RequestInit = {

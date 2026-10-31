@@ -1,4 +1,5 @@
-export { LineClient } from './client.js';
+export { LineClient, LineSendPausedError, setLineSendGuard, isMessageSendPath } from './client.js';
+export type { LineSendGuard } from './client.js';
 export { verifySignature } from './webhook.js';
 export {
   textMessage,

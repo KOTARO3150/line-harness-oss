@@ -35,6 +35,7 @@ export * from './affiliate-report';
 export * from './account-settings';
 export * from './video-library';
 export * from './orders';
+export * from './send-pause';
 
 /**
  * Thin wrapper around D1Database.

@@ -2165,3 +2165,19 @@ export const eventsApi = {
       withAccount('/api/events/admin/events/notifications/pending', accountId),
     ),
 };
+
+// LINE送信の緊急停止スイッチ。止めるのは担当者全員、再開は owner / admin。
+export type LineSendPauseState = {
+  paused: boolean
+  reason: string | null
+  updatedByStaffId: string | null
+  updatedAt: string | null
+}
+
+export const lineSendPauseApi = {
+  get: () => fetchApi<{ success: boolean; data: LineSendPauseState }>('/api/line-send-pause'),
+  set: (paused: boolean, reason?: string) =>
+    fetchApi<{ success: boolean; data: LineSendPauseState }>('/api/line-send-pause', {
+      method: 'POST', body: JSON.stringify({ paused, reason: reason ?? null }),
+    }),
+}

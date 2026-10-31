@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { api } from '@/lib/api'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
+import { SendPauseCard } from '@/components/line-send-pause/send-pause-card'
 
 type ActionStatus = 'idle' | 'confirming' | 'executing' | 'done' | 'error'
 
@@ -137,6 +138,9 @@ export default function EmergencyPage() {
   return (
     <div>
       <Header title="緊急コントロール" />
+
+      {/* 全送信のマスタースイッチ。下の個別操作より先に、まずこれを押す。 */}
+      <SendPauseCard />
 
       {/* Warning banner */}
       <div className="mb-6 p-4 bg-red-50 border-2 border-red-300 rounded-lg">

@@ -84,6 +84,8 @@ import adminUpdate from './routes/admin-update.js';
 import { consultationCharts } from './routes/consultation-charts.js';
 import { videoLibrary } from './routes/video-library.js';
 import { orders } from './routes/orders.js';
+import { sendPause } from './routes/send-pause.js';
+import { installLineSendGuard, isLineSendPausedSafe } from './services/send-pause.js';
 import { isLinkPreviewBot } from './lib/og-bot.js';
 import { buildOgHtml } from './lib/og-html.js';
 import {
@@ -151,6 +153,12 @@ export type Env = {
 };
 
 const app = new Hono<Env>();
+
+// LINE送信の緊急停止。すべての LineClient の送信がこの判定を通る（webhook の返信も含む）。
+app.use('*', async (c, next) => {
+  installLineSendGuard(c.env.DB);
+  await next();
+});
 
 // CORS — credentialed cookie auth cannot use a wildcard origin. Reflect only
 // same-origin requests and origins on the ADMIN_ORIGIN allowlist; everything
@@ -223,6 +231,7 @@ app.route('/', richMenuGroups);
 app.route('/', videoLibrary);
 app.route('/', richMenuAudit);
 app.route('/', orders);
+app.route('/', sendPause);
 
 // Phase 5 (upgrade flow) — public build metadata endpoint. Mounted under
 // /admin/ but intentionally unauthenticated: the dashboard fetches /admin/version
@@ -860,6 +869,8 @@ async function scheduled(
   env: Env['Bindings'],
   _ctx: ExecutionContext,
 ): Promise<void> {
+  installLineSendGuard(env.DB);
+
   // Get all active accounts from DB
   const dbAccounts = await getLineAccounts(env.DB);
 
@@ -898,29 +909,38 @@ async function scheduled(
     console.error('token refresh error:', e);
   }
 
-  try {
-    const result = await processDueReminders(env.DB, {
-      now: new Date(),
-      sender: sendBookingNotification,
-      reminderHoursBefore: DEFAULT_ACCOUNT_SETTINGS.reminder_hours_before,
-    });
-    if (result.sent + result.failed > 0) {
-      console.log(`[booking-reminders] sent=${result.sent} failed=${result.failed}`);
-    }
-  } catch (e) {
-    console.error('booking-reminders error:', e);
+  // 緊急停止中は、お客様に送るジョブ（リマインド・シナリオ・一斉配信・期限切れ通知）を
+  // 走らせない。未送信のまま残り、再開後の cron で送られる。
+  const sendPaused = await isLineSendPausedSafe(env.DB);
+  if (sendPaused) {
+    console.warn('[line-send-pause] 緊急停止中のため、この cron の送信ジョブを飛ばします');
   }
 
-  try {
-    const result = await processDueEventReminders(env.DB, {
-      now: new Date(),
-      sender: sendEventBookingNotification,
-    });
-    if (result.sent + result.failed > 0) {
-      console.log(`[event-booking-reminders] sent=${result.sent} failed=${result.failed}`);
+  if (!sendPaused) {
+    try {
+      const result = await processDueReminders(env.DB, {
+        now: new Date(),
+        sender: sendBookingNotification,
+        reminderHoursBefore: DEFAULT_ACCOUNT_SETTINGS.reminder_hours_before,
+      });
+      if (result.sent + result.failed > 0) {
+        console.log(`[booking-reminders] sent=${result.sent} failed=${result.failed}`);
+      }
+    } catch (e) {
+      console.error('booking-reminders error:', e);
     }
-  } catch (e) {
-    console.error('event-booking-reminders error:', e);
+
+    try {
+      const result = await processDueEventReminders(env.DB, {
+        now: new Date(),
+        sender: sendEventBookingNotification,
+      });
+      if (result.sent + result.failed > 0) {
+        console.log(`[event-booking-reminders] sent=${result.sent} failed=${result.failed}`);
+      }
+    } catch (e) {
+      console.error('event-booking-reminders error:', e);
+    }
   }
 
   // Phase 2: 配信系と定期ジョブを並列実行する。processScheduledBroadcasts は tag/all の
@@ -929,12 +949,14 @@ async function scheduled(
   // status='sending', batch_offset=0 に enqueue され、同 tick もしくは次 tick (最大5分、
   // 5分 cron の粒度内) で processQueuedBroadcasts に拾われて分割送信される。
   const jobs = [];
-  jobs.push(
-    processStepDeliveries(env.DB, defaultLineClient, env.WORKER_URL),
-    processScheduledBroadcasts(env.DB, defaultLineClient, env.WORKER_URL),
-    processReminderDeliveries(env.DB, defaultLineClient),
-  );
-  jobs.push(processQueuedBroadcasts(env.DB, defaultLineClient, env.WORKER_URL));
+  if (!sendPaused) {
+    jobs.push(
+      processStepDeliveries(env.DB, defaultLineClient, env.WORKER_URL),
+      processScheduledBroadcasts(env.DB, defaultLineClient, env.WORKER_URL),
+      processReminderDeliveries(env.DB, defaultLineClient),
+    );
+    jobs.push(processQueuedBroadcasts(env.DB, defaultLineClient, env.WORKER_URL));
+  }
   jobs.push(checkAccountHealth(env.DB));
 
   await Promise.allSettled(jobs);
@@ -947,7 +969,8 @@ async function scheduled(
   }
 
   // Booking expirer — runs only on the 6h cron tick.
-  if (event.cron === '0 */6 * * *') {
+  // 期限切れ時にお客様へ通知を送るので、緊急停止中は次の 6h tick に回す。
+  if (event.cron === '0 */6 * * *' && !sendPaused) {
     try {
       const result = await runExpirer(env.DB, {
         now: new Date(),
